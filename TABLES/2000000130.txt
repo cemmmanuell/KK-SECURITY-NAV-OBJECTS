@@ -2,28 +2,33 @@ OBJECT Table 2000000130 Device
 {
   OBJECT-PROPERTIES
   {
-    Date=19/09/18;
-    Time=12:00:00;
-    Version List=NAVW113.00;
+    Date=01/04/22;
+    Time=14:01:42;
+    Modified=Yes;
+    Version List=NAVW18.00;
   }
   PROPERTIES
   {
-    DataPerCompany=No;
-    ReplicateData=No;
+    DataPerCompany=Yes;
     CaptionML=ENU=Device;
   }
   FIELDS
   {
-    { 1   ;   ;MAC Address         ;Code20        ;CaptionML=ENU=MAC Address }
+    { 1   ;   ;MAC Address         ;Code20        ;OnValidate=BEGIN
+                                                                //tESTIN
+                                                              END;
+
+                                                   CaptionML=ENU=MAC Address }
     { 2   ;   ;Name                ;Text80        ;CaptionML=ENU=Name }
     { 3   ;   ;Device Type         ;Option        ;CaptionML=ENU=Device Type;
-                                                   OptionCaptionML=ENU=Full,Limited,ISV,ISV Functional;
-                                                   OptionString=Full,Limited,ISV,ISV Functional }
+                                                   OptionCaptionML=ENU=Full,Limited,ISV,ISV Functional,TIMS;
+                                                   OptionString=Full,Limited,ISV,ISV Functional,TIMS }
     { 4   ;   ;Enabled             ;Boolean       ;CaptionML=ENU=Enabled }
+    { 5   ;   ;Base ip address     ;Text50         }
   }
   KEYS
   {
-    {    ;MAC Address                             ;Clustered=Yes }
+    {    ;Enabled,Device Type                     ;Clustered=Yes }
   }
   FIELDGROUPS
   {

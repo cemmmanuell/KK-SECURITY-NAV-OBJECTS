@@ -2,8 +2,8 @@ OBJECT Report 54031 Sales - Invoice_KKSL
 {
   OBJECT-PROPERTIES
   {
-    Date=26/05/22;
-    Time=15:04:35;
+    Date=01/04/22;
+    Time=13:27:54;
     Modified=Yes;
     Version List=NAVW110.0;
   }
@@ -24,14 +24,23 @@ OBJECT Report 54031 Sales - Invoice_KKSL
                    AccNumb:=SalesReceivableSetup."A/C Number";
                    Bank:=SalesReceivableSetup."Bank Name";
                    Branch:=SalesReceivableSetup.Branch;
-                   Swift:=SalesReceivableSetup.SWIFT;
-                   Code:=SalesReceivableSetup.CODE;
+                   Swift:=SalesReceivableSetup.Swift;
+                   Code:=SalesReceivableSetup.Code;
                  END;
 
     OnPreReport=BEGIN
                   IF NOT CurrReport.USEREQUESTPAGE THEN
                     InitLogInteraction;
                 END;
+
+    OnPostReport=BEGIN
+                   IF CONFIRM('Do you want to send email to the customer?',FALSE ) THEN BEGIN
+                     //Send email
+                     invoiceEmail("Sales Invoice Header".GETFILTER("No."));
+                     //End send email
+
+                   END;
+                 END;
 
     PreviewMode=PrintLayout;
   }
@@ -62,6 +71,10 @@ OBJECT Report 54031 Sales - Invoice_KKSL
 
                                   IF LogInteraction THEN
                                     IF NOT CurrReport.PREVIEW THEN BEGIN
+                                      IF Cust.GET ("Sales Invoice Header"."Bill-to Customer No.") THEN BEGIN
+                                  //  CustPIN := Cust.TIN;
+                                   // ExemptionNo := Cust."Exemption Number";
+                                    END;
                                       IF "Bill-to Contact No." <> '' THEN
                                         SegManagement.LogDocument(
                                           4,"No.",0,0,DATABASE::Contact,"Bill-to Contact No.","Salesperson Code",
@@ -70,6 +83,8 @@ OBJECT Report 54031 Sales - Invoice_KKSL
                                         SegManagement.LogDocument(
                                           4,"No.",0,0,DATABASE::Customer,"Bill-to Customer No.","Salesperson Code",
                                           "Campaign No.","Posting Description",'');
+                                      signDocument("Sales Invoice Header".GETFILTER("No."),Cust.TIN, Cust."Exemption Number");
+
                                     END;
                                   IF Cust.GET ("Sales Invoice Header"."Bill-to Customer No.") THEN BEGIN
                                     CustPIN := Cust.TIN;
@@ -141,6 +156,32 @@ OBJECT Report 54031 Sales - Invoice_KKSL
 
     { 112 ;1   ;Column  ;Swift               ;
                SourceExpr=Swift }
+
+    { 122 ;1   ;DataItem;                    ;
+               DataItemTable=Table99999;
+               OnAfterGetRecord=BEGIN
+                                  KRAPrintLog.CALCFIELDS(QrCode);
+                                END;
+
+               DataItemLink=Document No=FIELD(No.) }
+
+    { 124 ;2   ;Column  ;DocumentNo_KRAPrintLog;
+               SourceExpr=KRAPrintLog."Document No" }
+
+    { 132 ;2   ;Column  ;Dateprinted_KRAPrintLog;
+               SourceExpr=KRAPrintLog."Date printed" }
+
+    { 133 ;2   ;Column  ;cuserialnumber_KRAPrintLog;
+               SourceExpr=KRAPrintLog.cu_serialnumber }
+
+    { 134 ;2   ;Column  ;cuinvoicenumber_KRAPrintLog;
+               SourceExpr=KRAPrintLog.cu_invoicenumber }
+
+    { 136 ;2   ;Column  ;verifyurl_KRAPrintLog;
+               SourceExpr=KRAPrintLog.verify_url }
+
+    { 139 ;2   ;Column  ;QrCode_KRAPrintLog  ;
+               SourceExpr=KRAPrintLog.QrCode }
 
     { 5701;1   ;DataItem;CopyLoop            ;
                DataItemTable=Table2000000026;
@@ -1167,8 +1208,8 @@ OBJECT Report 54031 Sales - Invoice_KKSL
       CustPIN@1084 : Code[20];
       ExemptionNo@1085 : Code[20];
       HSCode@1086 : Code[20];
-      ServiceCRMProduct@1087 : Record 69120;
       GLAccount@1088 : Record 15;
+      qrCode@1087 : Integer;
 
     PROCEDURE InitLogInteraction@1();
     BEGIN
@@ -1481,6 +1522,273 @@ OBJECT Report 54031 Sales - Invoice_KKSL
       END;
     END;
 
+    LOCAL PROCEDURE signDocument@14(invoiceNumber@1000 : Code[50];tin@1018 : Code[50];exceptionNo@1019 : Code[50]);
+    VAR
+      invoice_number@1013 : Code[100];
+      cu_serial_number@1012 : Code[100];
+      cu_invoice_number@1011 : Code[100];
+      verify_url@1010 : Text;
+      salesinvoice@1008 : Record 112;
+      JsonOut@1007 : DotNet "'mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.String";
+      saleinvoiceline@1006 : Record 113;
+      variables@1005 : Text;
+      kradevices@1004 : Record 2000000130;
+      InventoryPostingGroup@1003 : Record 94;
+      Item@1002 : Record 27;
+      customer@1001 : Record 18;
+      KRAPrintLog@1009 : Record 99999;
+      JSONTextWriter@1017 : DotNet "'Newtonsoft.Json, Version=6.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed'.Newtonsoft.Json.JsonTextWriter";
+      JSON@1016 : DotNet "'mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.String";
+      StringWriter@1015 : DotNet "'mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.IO.StringWriter";
+      StringBuilder@1014 : DotNet "'mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Text.StringBuilder";
+      HSCode2@1020 : Code[80];
+    BEGIN
+      IF kradevices.GET(TRUE, kradevices."Device Type"::TIMS) THEN BEGIN
+      KRAPrintLog.RESET;
+      KRAPrintLog.SETRANGE("Document No", invoiceNumber);
+      IF NOT KRAPrintLog.FIND('-') THEN BEGIN
+
+
+          salesinvoice.GET("Sales Invoice Header".GETFILTER("No."));
+      StringBuilder:=StringBuilder.StringBuilder;
+      StringWriter:=StringWriter.StringWriter(StringBuilder);
+      JSONTextWriter:=JSONTextWriter.JsonTextWriter(StringWriter);
+      JSONTextWriter.WriteStartObject;
+      salesinvoice.CALCFIELDS(Amount, "Amount Including VAT");
+      CreateJsonAttribute('invoice_date', salesinvoice."Document Date");
+      CreateJsonAttribute('invoice_number', salesinvoice."No.");
+      CreateJsonAttribute('invoice_pin', CompanyInfo."PIN NO.");
+      CreateJsonAttribute('customer_pin', tin);
+      CreateJsonAttribute('customer_exid', '');
+      CreateJsonAttribute('grand_total', salesinvoice."Amount Including VAT");
+
+      CreateJsonAttribute('tax_total', salesinvoice."Amount Including VAT"-salesinvoice.Amount);
+
+      CreateJsonAttribute('sel_currency', 'KSH');
+
+      JSONTextWriter.WritePropertyName('items_list');
+      JSONTextWriter.WriteStartArray;
+        saleinvoiceline.RESET;
+        saleinvoiceline.SETRANGE("Document No.", salesinvoice."No.");
+        saleinvoiceline.SETRANGE(Type, saleinvoiceline.Type::Item);
+        IF saleinvoiceline.FIND('-') THEN BEGIN
+          // MESSAGE(FORMAT(salesinvoice."Prices Including VAT"));
+          IF salesinvoice."Prices Including VAT"=TRUE THEN BEGIN
+          REPEAT
+          IF GLAccount.GET(saleinvoiceline."No.") THEN
+             HSCode2 := GLAccount."HS Codes";
+            IF HSCode2 <> '' THEN
+            JSONTextWriter.WriteValue(HSCode2+' '+saleinvoiceline.Description+' '+saleinvoiceline."Unit of Measure Code"+' '+FORMAT(saleinvoiceline.Quantity*1.0)+' '
+            +FORMAT(ROUND((saleinvoiceline."Unit Price"), 0.0001, '>')*1.0)+'.0000'+' '+FORMAT(saleinvoiceline."Line Discount Amount")+'.0000'+
+            ' '+FORMAT((saleinvoiceline."Amount Including VAT"))+'.0000')
+            ELSE
+              JSONTextWriter.WriteValue(' '+saleinvoiceline.Description+' '+saleinvoiceline."Unit of Measure Code"+' '+FORMAT(saleinvoiceline.Quantity*1.0)+' '
+            +FORMAT(ROUND((saleinvoiceline."Unit Price"), 0.0001, '>')*1.0)+'.0000'+' '+FORMAT(saleinvoiceline."Line Discount Amount")+'.0000'+
+            ' '+FORMAT((saleinvoiceline."Amount Including VAT"))+'.0000');
+          UNTIL saleinvoiceline.NEXT=0;
+          END ELSE BEGIN
+            REPEAT
+             IF GLAccount.GET(saleinvoiceline."No.") THEN
+             HSCode2 := GLAccount."HS Codes";
+            IF HSCode2 <> '' THEN
+            JSONTextWriter.WriteValue(' '+saleinvoiceline.Description+' '+saleinvoiceline."Unit of Measure Code"+' '+FORMAT(saleinvoiceline.Quantity)+' '
+            +FORMAT(saleinvoiceline."Unit Price")+' '+FORMAT(saleinvoiceline."Line Amount" ) );
+          UNTIL saleinvoiceline.NEXT=0;
+            END;
+
+
+        {
+        JSONTextWriter.WriteValue(' FLOUR WHEAT EXE 2KG THIS IS A 1.50 50.00 75.00');
+        JSONTextWriter.WriteValue(' SUGAR NZOIA 50KG 1.00 100.00 100.00');
+        JSONTextWriter.WriteValue('0001.13.09 SPIRIT TYPE JET FUEL 1.00 19.50 19.50');
+        JSONTextWriter.WriteValue('0039.11.16 SOME ZERO RATED ITEM 1.00 15.00 15.00');
+        JSONTextWriter.WriteValue('0001.11.00 BOVINE SEMEN EXEMPT ITEM 1.00 10.00 10.00');
+        }
+
+      JSONTextWriter.WriteEndArray;
+         {
+         saleinvoiceline.CALCSUMS("Line Discount Amount");
+         CreateJsonAttribute('net_discount_total',saleinvoiceline."Line Discount Amount");
+         CreateJsonAttribute('net_subtotal',salesinvoice.Amount);
+         }
+      END;
+      JSONTextWriter.WriteEndObject;
+      JsonOut:=StringBuilder.ToString;
+      variables:=JsonOut;
+
+
+
+
+
+       fnPostSign(variables,invoice_number,cu_serial_number,cu_invoice_number,verify_url, kradevices."Base ip address");
+       // MESSAGE (cu_serial_number);
+
+
+
+        IF cu_serial_number<>'' THEN
+        AddSigned(invoice_number,cu_serial_number, cu_invoice_number, verify_url, KRAPrintLog);
+        END;
+
+      END;
+      //END;
+    END;
+
+    LOCAL PROCEDURE CreateJsonAttribute@100000010(Attributename@1000 : Text;Value@1001 : Variant);
+    VAR
+      JSONTextWriter@1003 : DotNet "'Newtonsoft.Json, Version=6.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed'.Newtonsoft.Json.JsonTextWriter";
+      JSON@1002 : DotNet "'mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.String";
+    BEGIN
+      JSONTextWriter.WritePropertyName(Attributename);
+      JSONTextWriter.WriteValue(FORMAT(Value));
+    END;
+
+    LOCAL PROCEDURE fnPostSign@15(variables@1004 : Text;VAR invoice_number@1003 : Code[100];VAR cu_serial_number@1002 : Code[100];VAR cu_invoice_number@1001 : Code[100];VAR verify_url@1000 : Text;baseip@1018 : Text) ResponseData : Text;
+    VAR
+      url@1017 : Text;
+      Request@1016 : DotNet "'System, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Net.HttpWebRequest";
+      WebResponse@1015 : DotNet "'System, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Net.HttpWebResponse";
+      StreamReader@1014 : DotNet "'mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.IO.StreamReader";
+      salesshipment@1013 : Record 110;
+      StreamWriter@1011 : DotNet "'mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.IO.StreamWriter";
+      httpWebRequest@1010 : Codeunit 1297;
+      JsonOut@1009 : DotNet "'mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.String";
+      JsonConvert@1008 : DotNet "'Newtonsoft.Json, Version=6.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed'.Newtonsoft.Json.JsonConvert";
+      JToken@1007 : DotNet "'Newtonsoft.Json, Version=6.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed'.Newtonsoft.Json.Linq.JToken";
+      JObject@1006 : DotNet "'Newtonsoft.Json, Version=6.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed'.Newtonsoft.Json.Linq.JObject";
+      JValue@1005 : DotNet "'Newtonsoft.Json, Version=6.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed'.Newtonsoft.Json.Linq.JValue";
+    BEGIN
+      url:=baseip+'?invoice+3';
+      Request := Request.HttpWebRequest.Create(url);
+      Request.Method := 'POST';
+      Request.ContentType := 'application/json';
+      Request.Headers.Add('Authorization', 'Basic ZxZoaZMUQbUJDljA7kTExQ==');
+      StreamWriter := StreamWriter.StreamWriter(Request.GetRequestStream);
+      StreamWriter.Write(variables);
+      StreamWriter.Close;
+      StreamWriter.Dispose;
+      WebResponse := Request.GetResponse();
+
+      StreamReader := StreamReader.StreamReader(WebResponse.GetResponseStream);
+      ResponseData := StreamReader.ReadToEnd;
+
+
+      IF ResponseData<>'' THEN BEGIN
+        ResponseData:=CONVERTSTR(ResponseData, '\', ' ');
+      JToken:=JToken.Parse(ResponseData);
+      {
+      MESSAGE(FORMAT(JToken.SelectToken('invoice_number')));
+      MESSAGE(FORMAT(JToken.SelectToken('cu_serial_number')));
+      MESSAGE(FORMAT(JToken.SelectToken('cu_invoice_number')));
+      MESSAGE(FORMAT(JToken.SelectToken('verify_url')));
+      MESSAGE(FORMAT(JToken.SelectToken('description')));
+      }
+      invoice_number:=FORMAT(JToken.SelectToken('invoice_number'));
+      cu_invoice_number:=FORMAT(JToken.SelectToken('cu_invoice_number'));
+      cu_serial_number:=FORMAT(JToken.SelectToken('cu_serial_number'));
+      verify_url:=FORMAT(JToken.SelectToken('verify_url'));
+      END;
+    END;
+
+    LOCAL PROCEDURE AddSigned@17(invoice_number@1004 : Code[100];cu_serial_number@1003 : Code[100];cu_invoice_number@1002 : Code[100];verify_url@1001 : Text;KRAPrintLog@1000 : Record 99999);
+    VAR
+      TempBlob@1007 : Record 99008535;
+      QRCodeInput@1006 : Text;
+      QRCodeFileName@1005 : Text;
+    BEGIN
+      CreateQRCode(DELCHR(verify_url,'=',' ') ,TempBlob);
+      KRAPrintLog.INIT;
+      KRAPrintLog .QrCode:=TempBlob.Blob;
+      KRAPrintLog.cu_invoicenumber:=cu_invoice_number;
+      KRAPrintLog.cu_serialnumber:=cu_serial_number;
+      KRAPrintLog."Document No":=invoice_number;
+      KRAPrintLog.INSERT;
+    END;
+
+    LOCAL PROCEDURE CreateQRCode@1020089(QRCodeInput@1020047 : Text[250];VAR TempBLOB@1020048 : Record 99008535);
+    VAR
+      QRCodeFileName@1020049 : Text[1024];
+    BEGIN
+      CLEAR(TempBLOB);
+      QRCodeFileName := GetQRCode(QRCodeInput);
+      UploadFileBLOBImportandDeleteServerFile(TempBLOB,QRCodeFileName);
+    END;
+
+    PROCEDURE UploadFileBLOBImportandDeleteServerFile@1020098(VAR TempBlob@1020048 : Record 99008535;FileName@1020049 : Text[1024]);
+    VAR
+      FileManagement@33027920 : Codeunit 419;
+    BEGIN
+      FileName := FileManagement.UploadFileSilent(FileName);
+      FileManagement.BLOBImportFromServerFile(TempBlob,FileName);
+
+      DeleteServerFile(FileName);
+    END;
+
+    LOCAL PROCEDURE DeleteServerFile@1020047(ServerFileName@1020000 : Text);
+    BEGIN
+      IF ERASE(ServerFileName) THEN;
+    END;
+
+    LOCAL PROCEDURE GetQRCode@1020038(QRCodeInput@1020001 : Text[250]) QRCodeFileName : Text[1024];
+    VAR
+      IBarCodeProvider@1020000 : DotNet "'Microsoft.Dynamics.Nav.MX, Version=10.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35'.Microsoft.Dynamics.Nav.MX.BarcodeProviders.IBarcodeProvider";
+    BEGIN
+      GetBarCodeProvider(IBarCodeProvider);
+      QRCodeFileName := IBarCodeProvider.GetBarcode(QRCodeInput);
+    END;
+
+    PROCEDURE GetBarCodeProvider@1020001(VAR IBarCodeProvider@1020000 : DotNet "'Microsoft.Dynamics.Nav.MX, Version=10.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35'.Microsoft.Dynamics.Nav.MX.BarcodeProviders.IBarcodeProvider" RUNONCLIENT);
+    VAR
+      QRCodeProvider@1020002 : DotNet "'Microsoft.Dynamics.Nav.MX, Version=10.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35'.Microsoft.Dynamics.Nav.MX.BarcodeProviders.QRCodeProvider" RUNONCLIENT;
+    BEGIN
+      IF ISNULL(IBarCodeProvider) THEN
+        IBarCodeProvider := QRCodeProvider.QRCodeProvider;
+    END;
+
+    LOCAL PROCEDURE invoiceEmail@18(invoiceNumber@1000 : Code[50]);
+    VAR
+      SMTPMailSetup@1001 : Record 409;
+      SMTPMail@1002 : Codeunit 400;
+      EmailID@1003 : Text;
+      SalesInvoiceHeader@1004 : Record 112;
+      SelesInvoieHeaderTemplate@1005 : TEMPORARY Record 112;
+      SalesInvoice@1006 : Report 54031;
+      TempFileName@1007 : Text;
+      IStraeam@1008 : InStream;
+      OStream@1009 : OutStream;
+      XmlParameters@1010 : Text;
+      cust@1011 : Record 18;
+    BEGIN
+      SMTPMailSetup.GET;
+
+      SalesInvoiceHeader.RESET;
+      SalesInvoiceHeader.SETRANGE("No.", invoiceNumber);
+      IF SalesInvoiceHeader.FINDFIRST THEN BEGIN
+      IF cust.GET(SalesInvoiceHeader."Sell-to Customer No.") THEN BEGIN
+
+      EmailID:=cust."E-Mail";
+      IF EmailID<>'' THEN BEGIN
+      SalesInvoice .SETTABLEVIEW(SalesInvoiceHeader);
+      XmlParameters:=SalesInvoice .RUNREQUESTPAGE();
+      //SelesInvoieHeaderTemplate.Parameters.CREATEOUTSTREAM(OStream,TEXTENCODING::UTF8);
+      //SelesInvoieHeaderTemplate.Parameters.CREATEINSTREAM(IStream,TEXTENCODING::UTF8);
+      REPORT.SAVEAS(54031,'',REPORTFORMAT::Pdf,OStream);
+
+      CLEAR(SMTPMail);
+      SMTPMail.CreateMessage('',SMTPMailSetup."User ID",EmailID,'Invoice','',TRUE);
+      SMTPMail.AddAttachmentStream(IStraeam,'Ivoice'+ SalesInvoiceHeader."No."+'.pdf');
+      SMTPMail.AppendBody('Hi '+cust.Name+',');
+
+      SMTPMail.AppendBody('<br>');
+      SMTPMail.AppendBody('Please find attached your Customer Invoice');
+      SMTPMail.AppendBody('<FIN>');
+      SMTPMail.AppendBody('This is a system generated mail. Please do not reply to this mail!');
+      SMTPMail.Send;
+      //MESSAGE(ÁMail sent to Customer %1Â,Custno);
+      END;
+      END;
+      END;
+    END;
+
     BEGIN
     END.
   }
@@ -1568,6 +1876,24 @@ OBJECT Report 54031 Sales - Invoice_KKSL
         </Field>
         <Field Name="Swift">
           <DataField>Swift</DataField>
+        </Field>
+        <Field Name="DocumentNo_KRAPrintLog">
+          <DataField>DocumentNo_KRAPrintLog</DataField>
+        </Field>
+        <Field Name="Dateprinted_KRAPrintLog">
+          <DataField>Dateprinted_KRAPrintLog</DataField>
+        </Field>
+        <Field Name="cuserialnumber_KRAPrintLog">
+          <DataField>cuserialnumber_KRAPrintLog</DataField>
+        </Field>
+        <Field Name="cuinvoicenumber_KRAPrintLog">
+          <DataField>cuinvoicenumber_KRAPrintLog</DataField>
+        </Field>
+        <Field Name="verifyurl_KRAPrintLog">
+          <DataField>verifyurl_KRAPrintLog</DataField>
+        </Field>
+        <Field Name="QrCode_KRAPrintLog">
+          <DataField>QrCode_KRAPrintLog</DataField>
         </Field>
         <Field Name="HomePage">
           <DataField>HomePage</DataField>
@@ -6427,7 +6753,7 @@ Cstr(Fields!HomePageCaption.Value)
           </Style>
         </PageHeader>
         <PageFooter>
-          <Height>2.92806cm</Height>
+          <Height>5.43353cm</Height>
           <PrintOnLastPage>true</PrintOnLastPage>
           <ReportItems>
             <Rectangle Name="Rectangle4">
@@ -6779,6 +7105,120 @@ Cstr(Fields!HomePageCaption.Value)
               <Height>1.46665cm</Height>
               <Width>8.19469cm</Width>
               <ZIndex>7</ZIndex>
+              <Style>
+                <Border>
+                  <Style>None</Style>
+                </Border>
+              </Style>
+            </Rectangle>
+            <Rectangle Name="Rectangle5">
+              <ReportItems>
+                <Image Name="Image1">
+                  <Source>Database</Source>
+                  <Value>=First(Fields!QrCode_KRAPrintLog.Value, "DataSet_Result")</Value>
+                  <MIMEType>image/bmp</MIMEType>
+                  <Sizing>FitProportional</Sizing>
+                  <Left>7.22775cm</Left>
+                  <Height>2.03879cm</Height>
+                  <Width>2.39733cm</Width>
+                  <Style>
+                    <Border>
+                      <Style>None</Style>
+                    </Border>
+                  </Style>
+                </Image>
+                <Textbox Name="Textbox8">
+                  <CanGrow>true</CanGrow>
+                  <KeepTogether>true</KeepTogether>
+                  <Paragraphs>
+                    <Paragraph>
+                      <TextRuns>
+                        <TextRun>
+                          <Value EvaluationMode="Auto">Cu serial number : </Value>
+                          <Style>
+                            <FontSize>8pt</FontSize>
+                            <FontWeight>Bold</FontWeight>
+                          </Style>
+                        </TextRun>
+                        <TextRun>
+                          <Value EvaluationMode="Auto">=First(Fields!cuserialnumber_KRAPrintLog.Value, "DataSet_Result")</Value>
+                          <Style>
+                            <FontSize>8pt</FontSize>
+                            <FontWeight>Bold</FontWeight>
+                          </Style>
+                        </TextRun>
+                      </TextRuns>
+                      <Style />
+                    </Paragraph>
+                  </Paragraphs>
+                  <rd:DefaultName>Textbox8</rd:DefaultName>
+                  <Top>0.87163cm</Top>
+                  <Left>0.0399cm</Left>
+                  <Height>0.44125cm</Height>
+                  <Width>7.01146cm</Width>
+                  <ZIndex>1</ZIndex>
+                  <Style>
+                    <Border>
+                      <Style>None</Style>
+                    </Border>
+                    <VerticalAlign>Middle</VerticalAlign>
+                    <PaddingLeft>2pt</PaddingLeft>
+                    <PaddingRight>2pt</PaddingRight>
+                    <PaddingTop>2pt</PaddingTop>
+                    <PaddingBottom>2pt</PaddingBottom>
+                  </Style>
+                </Textbox>
+                <Textbox Name="Textbox29">
+                  <CanGrow>true</CanGrow>
+                  <KeepTogether>true</KeepTogether>
+                  <Paragraphs>
+                    <Paragraph>
+                      <TextRuns>
+                        <TextRun>
+                          <Value EvaluationMode="Auto">Cu Invoice Number: </Value>
+                          <Style>
+                            <FontSize>8pt</FontSize>
+                            <FontWeight>Bold</FontWeight>
+                          </Style>
+                        </TextRun>
+                        <TextRun>
+                          <Value EvaluationMode="Auto">=First(Fields!cuinvoicenumber_KRAPrintLog.Value, "DataSet_Result")</Value>
+                          <Style>
+                            <FontSize>8pt</FontSize>
+                            <FontWeight>Bold</FontWeight>
+                          </Style>
+                        </TextRun>
+                      </TextRuns>
+                      <Style />
+                    </Paragraph>
+                  </Paragraphs>
+                  <rd:DefaultName>Textbox27</rd:DefaultName>
+                  <Top>0.87163cm</Top>
+                  <Left>9.80148cm</Left>
+                  <Height>0.44125cm</Height>
+                  <Width>7.77467cm</Width>
+                  <ZIndex>2</ZIndex>
+                  <Style>
+                    <Border>
+                      <Style>None</Style>
+                    </Border>
+                    <VerticalAlign>Middle</VerticalAlign>
+                    <PaddingLeft>2pt</PaddingLeft>
+                    <PaddingRight>2pt</PaddingRight>
+                    <PaddingTop>2pt</PaddingTop>
+                    <PaddingBottom>2pt</PaddingBottom>
+                  </Style>
+                </Textbox>
+              </ReportItems>
+              <KeepTogether>true</KeepTogether>
+              <Top>3.31536cm</Top>
+              <Left>0.65597cm</Left>
+              <Height>2.11817cm</Height>
+              <Width>17.7615cm</Width>
+              <ZIndex>8</ZIndex>
+              <Visibility>
+                <Hidden>=Microsoft.VisualBasic.Interaction.IIF(First(Fields!cuinvoicenumber_KRAPrintLog.Value, "DataSet_Result") = "", True, False)</Hidden>
+              </Visibility>
               <Style>
                 <Border>
                   <Style>None</Style>

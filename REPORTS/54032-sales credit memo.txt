@@ -2,8 +2,8 @@ OBJECT Report 54032 Sales - Credit Memo_KKSL
 {
   OBJECT-PROPERTIES
   {
-    Date=02/06/22;
-    Time=11:32:02;
+    Date=01/04/22;
+    Time=13:55:55;
     Modified=Yes;
     Version List=NAVW110.0;
   }
@@ -72,6 +72,8 @@ OBJECT Report 54032 Sales - Credit Memo_KKSL
                                       SegManagement.LogDocument(
                                         6,"No.",0,0,DATABASE::Customer,"Bill-to Customer No.","Salesperson Code",
                                         "Campaign No.","Posting Description",'');
+                                        Cust.GET(Header."Bill-to Customer No.");
+                                      signDocument(Header .GETFILTER("No."),Cust.TIN, Cust."Exemption Number");
                                   END;
 
                                   TotalSubTotal := 0;
@@ -440,6 +442,32 @@ OBJECT Report 54032 Sales - Credit Memo_KKSL
 
     { 203 ;1   ;Column  ;RelevantNo          ;
                SourceExpr=Header."External Document No." }
+
+    { 214 ;1   ;DataItem;                    ;
+               DataItemTable=Table99999;
+               OnAfterGetRecord=BEGIN
+                                  KRAPrintLog.CALCFIELDS(QrCode);
+                                END;
+
+               DataItemLink=Document No=FIELD(No.) }
+
+    { 213 ;2   ;Column  ;DocumentNo_KRAPrintLog;
+               SourceExpr=KRAPrintLog."Document No" }
+
+    { 208 ;2   ;Column  ;Dateprinted_KRAPrintLog;
+               SourceExpr=KRAPrintLog."Date printed" }
+
+    { 207 ;2   ;Column  ;cuserialnumber_KRAPrintLog;
+               SourceExpr=KRAPrintLog.cu_serialnumber }
+
+    { 206 ;2   ;Column  ;cuinvoicenumber_KRAPrintLog;
+               SourceExpr=KRAPrintLog.cu_invoicenumber }
+
+    { 205 ;2   ;Column  ;verifyurl_KRAPrintLog;
+               SourceExpr=KRAPrintLog.verify_url }
+
+    { 204 ;2   ;Column  ;QrCode_KRAPrintLog  ;
+               SourceExpr=KRAPrintLog.QrCode }
 
     { 1570;1   ;DataItem;Line                ;
                DataItemTable=Table115;
@@ -1129,6 +1157,287 @@ OBJECT Report 54032 Sales - Credit Memo_KKSL
       END;
     END;
 
+    LOCAL PROCEDURE signDocument@14(invoiceNumber@1000 : Code[50];tin@1018 : Code[50];exceptionNo@1019 : Code[50]);
+    VAR
+      invoice_number@1013 : Code[100];
+      cu_serial_number@1012 : Code[100];
+      cu_invoice_number@1011 : Code[100];
+      verify_url@1010 : Text;
+      salesinvoice@1008 : Record 114;
+      JsonOut@1007 : DotNet "'mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.String";
+      saleinvoiceline@1006 : Record 115;
+      variables@1005 : Text;
+      kradevices@1004 : Record 2000000130;
+      InventoryPostingGroup@1003 : Record 94;
+      Item@1002 : Record 27;
+      customer@1001 : Record 18;
+      KRAPrintLog@1009 : Record 99999;
+      JSONTextWriter@1017 : DotNet "'Newtonsoft.Json, Version=6.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed'.Newtonsoft.Json.JsonTextWriter";
+      JSON@1016 : DotNet "'mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.String";
+      StringWriter@1015 : DotNet "'mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.IO.StringWriter";
+      StringBuilder@1014 : DotNet "'mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Text.StringBuilder";
+      HSCode2@1020 : Code[80];
+      KRAPrintLog2@1021 : Record 99999;
+      DetailedCustLedgEntry@1023 : Record 379;
+      customerLedgerEntry@1022 : Record 21;
+    BEGIN
+      IF kradevices.GET(TRUE, kradevices."Device Type"::TIMS) THEN BEGIN
+      //Get invoice
+
+            KRAPrintLog.RESET;
+      KRAPrintLog.SETRANGE("Document No", invoiceNumber);
+      IF NOT KRAPrintLog.FIND('-') THEN BEGIN
+
+
+      salesinvoice.GET(Header.GETFILTER("No."));
+      IF salesinvoice."Applies-to Doc. No." <>'' THEN BEGIN
+      StringBuilder:=StringBuilder.StringBuilder;
+      StringWriter:=StringWriter.StringWriter(StringBuilder);
+      JSONTextWriter:=JSONTextWriter.JsonTextWriter(StringWriter);
+      JSONTextWriter.WriteStartObject;
+      salesinvoice.CALCFIELDS(Amount, "Amount Including VAT");
+      CreateJsonAttribute('invoice_date', salesinvoice."Document Date");
+      CreateJsonAttribute('invoice_number', salesinvoice."No.");
+      CreateJsonAttribute('invoice_pin', CompanyInfo."PIN NO.");
+      CreateJsonAttribute('customer_pin', tin);
+      CreateJsonAttribute('customer_exid', '');
+
+      CreateJsonAttribute('grand_total', salesinvoice."Amount Including VAT");
+      CreateJsonAttribute('rel_doc_number', salesinvoice."Applies-to Doc. No.");
+      CreateJsonAttribute('tax_total', salesinvoice."Amount Including VAT"-salesinvoice.Amount);
+
+      CreateJsonAttribute('sel_currency', 'KSH');
+
+      JSONTextWriter.WritePropertyName('items_list');
+      JSONTextWriter.WriteStartArray;
+        saleinvoiceline.RESET;
+        saleinvoiceline.SETRANGE("Document No.", salesinvoice."No.");
+        saleinvoiceline.SETRANGE(Type, saleinvoiceline.Type::Item);
+        IF saleinvoiceline.FIND('-') THEN BEGIN
+          // MESSAGE(FORMAT(salesinvoice."Prices Including VAT"));
+          IF salesinvoice."Prices Including VAT"=TRUE THEN BEGIN
+          REPEAT
+          IF GLAccount.GET(saleinvoiceline."No.") THEN
+             HSCode2 := GLAccount."HS Codes";
+            IF HSCode2 <> '' THEN
+            JSONTextWriter.WriteValue(HSCode2+' '+saleinvoiceline.Description+' '+saleinvoiceline."Unit of Measure Code"+' '+FORMAT(saleinvoiceline.Quantity*1.0)+' '
+            +FORMAT(ROUND((saleinvoiceline."Unit Price"), 0.0001, '>')*1.0)+'.0000'+' '+FORMAT(saleinvoiceline."Line Discount Amount")+'.0000'+
+            ' '+FORMAT((saleinvoiceline."Amount Including VAT"))+'.0000')
+            ELSE
+              JSONTextWriter.WriteValue(' '+saleinvoiceline.Description+' '+saleinvoiceline."Unit of Measure Code"+' '+FORMAT(saleinvoiceline.Quantity*1.0)+' '
+            +FORMAT(ROUND((saleinvoiceline."Unit Price"), 0.0001, '>')*1.0)+'.0000'+' '+FORMAT(saleinvoiceline."Line Discount Amount")+'.0000'+
+            ' '+FORMAT((saleinvoiceline."Amount Including VAT"))+'.0000');
+          UNTIL saleinvoiceline.NEXT=0;
+          END ELSE BEGIN
+            REPEAT
+             IF GLAccount.GET(saleinvoiceline."No.") THEN
+             HSCode2 := GLAccount."HS Codes";
+            IF HSCode2 <> '' THEN
+            JSONTextWriter.WriteValue(' '+saleinvoiceline.Description+' '+saleinvoiceline."Unit of Measure Code"+' '+FORMAT(saleinvoiceline.Quantity)+' '
+            +FORMAT(saleinvoiceline."Unit Price")+' '+FORMAT(saleinvoiceline."Line Amount" ) );
+          UNTIL saleinvoiceline.NEXT=0;
+            END;
+
+
+        {
+        JSONTextWriter.WriteValue(' FLOUR WHEAT EXE 2KG THIS IS A 1.50 50.00 75.00');
+        JSONTextWriter.WriteValue(' SUGAR NZOIA 50KG 1.00 100.00 100.00');
+        JSONTextWriter.WriteValue('0001.13.09 SPIRIT TYPE JET FUEL 1.00 19.50 19.50');
+        JSONTextWriter.WriteValue('0039.11.16 SOME ZERO RATED ITEM 1.00 15.00 15.00');
+        JSONTextWriter.WriteValue('0001.11.00 BOVINE SEMEN EXEMPT ITEM 1.00 10.00 10.00');
+        }
+
+      JSONTextWriter.WriteEndArray;
+         {
+         saleinvoiceline.CALCSUMS("Line Discount Amount");
+         CreateJsonAttribute('net_discount_total',saleinvoiceline."Line Discount Amount");
+         CreateJsonAttribute('net_subtotal',salesinvoice.Amount);
+         }
+      END;
+      JSONTextWriter.WriteEndObject;
+      JsonOut:=StringBuilder.ToString;
+      variables:=JsonOut;
+
+
+
+
+
+       fnPostSign(variables,invoice_number,cu_serial_number,cu_invoice_number,verify_url, kradevices."Base ip address");
+       // MESSAGE (cu_serial_number);
+
+
+
+        IF cu_serial_number<>'' THEN
+        AddSigned(invoice_number,cu_serial_number, cu_invoice_number, verify_url, KRAPrintLog);
+        END;
+        END;
+
+          // END;
+      //End get invoice
+
+
+
+
+      //END;
+      END;
+    END;
+
+    LOCAL PROCEDURE CreateJsonAttribute@100000010(Attributename@1000 : Text;Value@1001 : Variant);
+    VAR
+      JSONTextWriter@1003 : DotNet "'Newtonsoft.Json, Version=6.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed'.Newtonsoft.Json.JsonTextWriter";
+      JSON@1002 : DotNet "'mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.String";
+    BEGIN
+      JSONTextWriter.WritePropertyName(Attributename);
+      JSONTextWriter.WriteValue(FORMAT(Value));
+    END;
+
+    LOCAL PROCEDURE fnPostSign@7(variables@1004 : Text;VAR invoice_number@1003 : Code[100];VAR cu_serial_number@1002 : Code[100];VAR cu_invoice_number@1001 : Code[100];VAR verify_url@1000 : Text;baseip@1018 : Text) ResponseData : Text;
+    VAR
+      url@1017 : Text;
+      Request@1016 : DotNet "'System, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Net.HttpWebRequest";
+      WebResponse@1015 : DotNet "'System, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Net.HttpWebResponse";
+      StreamReader@1014 : DotNet "'mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.IO.StreamReader";
+      salesshipment@1013 : Record 110;
+      StreamWriter@1011 : DotNet "'mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.IO.StreamWriter";
+      httpWebRequest@1010 : Codeunit 1297;
+      JsonOut@1009 : DotNet "'mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.String";
+      JsonConvert@1008 : DotNet "'Newtonsoft.Json, Version=6.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed'.Newtonsoft.Json.JsonConvert";
+      JToken@1007 : DotNet "'Newtonsoft.Json, Version=6.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed'.Newtonsoft.Json.Linq.JToken";
+      JObject@1006 : DotNet "'Newtonsoft.Json, Version=6.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed'.Newtonsoft.Json.Linq.JObject";
+      JValue@1005 : DotNet "'Newtonsoft.Json, Version=6.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed'.Newtonsoft.Json.Linq.JValue";
+    BEGIN
+      url:=baseip+'?invoice+2';
+      Request := Request.HttpWebRequest.Create(url);
+      Request.Method := 'POST';
+      Request.ContentType := 'application/json';
+      Request.Headers.Add('Authorization', 'Basic ZxZoaZMUQbUJDljA7kTExQ==');
+      StreamWriter := StreamWriter.StreamWriter(Request.GetRequestStream);
+      StreamWriter.Write(variables);
+      StreamWriter.Close;
+      StreamWriter.Dispose;
+      WebResponse := Request.GetResponse();
+
+      StreamReader := StreamReader.StreamReader(WebResponse.GetResponseStream);
+      ResponseData := StreamReader.ReadToEnd;
+
+
+      IF ResponseData<>'' THEN BEGIN
+        ResponseData:=CONVERTSTR(ResponseData, '\', ' ');
+      JToken:=JToken.Parse(ResponseData);
+      {
+      MESSAGE(FORMAT(JToken.SelectToken('invoice_number')));
+      MESSAGE(FORMAT(JToken.SelectToken('cu_serial_number')));
+      MESSAGE(FORMAT(JToken.SelectToken('cu_invoice_number')));
+      MESSAGE(FORMAT(JToken.SelectToken('verify_url')));
+      MESSAGE(FORMAT(JToken.SelectToken('description')));
+      }
+      invoice_number:=FORMAT(JToken.SelectToken('invoice_number'));
+      cu_invoice_number:=FORMAT(JToken.SelectToken('cu_invoice_number'));
+      cu_serial_number:=FORMAT(JToken.SelectToken('cu_serial_number'));
+      verify_url:=FORMAT(JToken.SelectToken('verify_url'));
+      END;
+    END;
+
+    LOCAL PROCEDURE AddSigned@17(invoice_number@1004 : Code[100];cu_serial_number@1003 : Code[100];cu_invoice_number@1002 : Code[100];verify_url@1001 : Text;KRAPrintLog@1000 : Record 99999);
+    VAR
+      TempBlob@1007 : Record 99008535;
+      QRCodeInput@1006 : Text;
+      QRCodeFileName@1005 : Text;
+    BEGIN
+      CreateQRCode(DELCHR(verify_url,'=',' ') ,TempBlob);
+      KRAPrintLog.INIT;
+      KRAPrintLog .QrCode:=TempBlob.Blob;
+      KRAPrintLog.cu_invoicenumber:=cu_invoice_number;
+      KRAPrintLog.cu_serialnumber:=cu_serial_number;
+      KRAPrintLog."Document No":=invoice_number;
+      KRAPrintLog.INSERT;
+    END;
+
+    LOCAL PROCEDURE CreateQRCode@1020089(QRCodeInput@1020047 : Text[250];VAR TempBLOB@1020048 : Record 99008535);
+    VAR
+      QRCodeFileName@1020049 : Text[1024];
+    BEGIN
+      CLEAR(TempBLOB);
+      QRCodeFileName := GetQRCode(QRCodeInput);
+      UploadFileBLOBImportandDeleteServerFile(TempBLOB,QRCodeFileName);
+    END;
+
+    PROCEDURE UploadFileBLOBImportandDeleteServerFile@1020098(VAR TempBlob@1020048 : Record 99008535;FileName@1020049 : Text[1024]);
+    VAR
+      FileManagement@33027920 : Codeunit 419;
+    BEGIN
+      FileName := FileManagement.UploadFileSilent(FileName);
+      FileManagement.BLOBImportFromServerFile(TempBlob,FileName);
+
+      DeleteServerFile(FileName);
+    END;
+
+    LOCAL PROCEDURE DeleteServerFile@1020047(ServerFileName@1020000 : Text);
+    BEGIN
+      IF ERASE(ServerFileName) THEN;
+    END;
+
+    LOCAL PROCEDURE GetQRCode@1020038(QRCodeInput@1020001 : Text[250]) QRCodeFileName : Text[1024];
+    VAR
+      IBarCodeProvider@1020000 : DotNet "'Microsoft.Dynamics.Nav.MX, Version=10.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35'.Microsoft.Dynamics.Nav.MX.BarcodeProviders.IBarcodeProvider";
+    BEGIN
+      GetBarCodeProvider(IBarCodeProvider);
+      QRCodeFileName := IBarCodeProvider.GetBarcode(QRCodeInput);
+    END;
+
+    PROCEDURE GetBarCodeProvider@1020001(VAR IBarCodeProvider@1020000 : DotNet "'Microsoft.Dynamics.Nav.MX, Version=10.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35'.Microsoft.Dynamics.Nav.MX.BarcodeProviders.IBarcodeProvider" RUNONCLIENT);
+    VAR
+      QRCodeProvider@1020002 : DotNet "'Microsoft.Dynamics.Nav.MX, Version=10.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35'.Microsoft.Dynamics.Nav.MX.BarcodeProviders.QRCodeProvider" RUNONCLIENT;
+    BEGIN
+      IF ISNULL(IBarCodeProvider) THEN
+        IBarCodeProvider := QRCodeProvider.QRCodeProvider;
+    END;
+
+    LOCAL PROCEDURE invoiceEmail@18(invoiceNumber@1000 : Code[50]);
+    VAR
+      SMTPMailSetup@1001 : Record 409;
+      SMTPMail@1002 : Codeunit 400;
+      EmailID@1003 : Text;
+      SalesInvoiceHeader@1004 : Record 112;
+      SelesInvoieHeaderTemplate@1005 : TEMPORARY Record 112;
+      SalesInvoice@1006 : Report 54031;
+      TempFileName@1007 : Text;
+      IStraeam@1008 : InStream;
+      OStream@1009 : OutStream;
+      XmlParameters@1010 : Text;
+      cust@1011 : Record 18;
+    BEGIN
+      SMTPMailSetup.GET;
+
+      SalesInvoiceHeader.RESET;
+      SalesInvoiceHeader.SETRANGE("No.", invoiceNumber);
+      IF SalesInvoiceHeader.FINDFIRST THEN BEGIN
+      IF cust.GET(SalesInvoiceHeader."Sell-to Customer No.") THEN BEGIN
+
+      EmailID:=cust."E-Mail";
+      IF EmailID<>'' THEN BEGIN
+      SalesInvoice .SETTABLEVIEW(SalesInvoiceHeader);
+      XmlParameters:=SalesInvoice .RUNREQUESTPAGE();
+      //SelesInvoieHeaderTemplate.Parameters.CREATEOUTSTREAM(OStream,TEXTENCODING::UTF8);
+      //SelesInvoieHeaderTemplate.Parameters.CREATEINSTREAM(IStream,TEXTENCODING::UTF8);
+      REPORT.SAVEAS(54031,'',REPORTFORMAT::Pdf,OStream);
+
+      CLEAR(SMTPMail);
+      SMTPMail.CreateMessage('',SMTPMailSetup."User ID",EmailID,'Invoice','',TRUE);
+      SMTPMail.AddAttachmentStream(IStraeam,'Ivoice'+ SalesInvoiceHeader."No."+'.pdf');
+      SMTPMail.AppendBody('Hi '+cust.Name+',');
+
+      SMTPMail.AppendBody('<br>');
+      SMTPMail.AppendBody('Please find attached your Customer Invoice');
+      SMTPMail.AppendBody('<FIN>');
+      SMTPMail.AppendBody('This is a system generated mail. Please do not reply to this mail!');
+      SMTPMail.Send;
+      //MESSAGE(ÁMail sent to Customer %1Â,Custno);
+      END;
+      END;
+      END;
+    END;
+
     BEGIN
     END.
   }
@@ -1510,6 +1819,24 @@ OBJECT Report 54032 Sales - Credit Memo_KKSL
         </Field>
         <Field Name="RelevantNo">
           <DataField>RelevantNo</DataField>
+        </Field>
+        <Field Name="DocumentNo_KRAPrintLog">
+          <DataField>DocumentNo_KRAPrintLog</DataField>
+        </Field>
+        <Field Name="Dateprinted_KRAPrintLog">
+          <DataField>Dateprinted_KRAPrintLog</DataField>
+        </Field>
+        <Field Name="cuserialnumber_KRAPrintLog">
+          <DataField>cuserialnumber_KRAPrintLog</DataField>
+        </Field>
+        <Field Name="cuinvoicenumber_KRAPrintLog">
+          <DataField>cuinvoicenumber_KRAPrintLog</DataField>
+        </Field>
+        <Field Name="verifyurl_KRAPrintLog">
+          <DataField>verifyurl_KRAPrintLog</DataField>
+        </Field>
+        <Field Name="QrCode_KRAPrintLog">
+          <DataField>QrCode_KRAPrintLog</DataField>
         </Field>
         <Field Name="LineNo_Line">
           <DataField>LineNo_Line</DataField>
@@ -9428,8 +9755,122 @@ OBJECT Report 54032 Sales - Credit Memo_KKSL
               </Border>
             </Style>
           </Tablix>
+          <Rectangle Name="Rectangle5">
+            <ReportItems>
+              <Image Name="Image1">
+                <Source>Database</Source>
+                <Value>=First(Fields!QrCode_KRAPrintLog.Value, "DataSet_Result")</Value>
+                <MIMEType>image/bmp</MIMEType>
+                <Sizing>FitProportional</Sizing>
+                <Left>7.22775cm</Left>
+                <Height>2.03879cm</Height>
+                <Width>2.39733cm</Width>
+                <Style>
+                  <Border>
+                    <Style>None</Style>
+                  </Border>
+                </Style>
+              </Image>
+              <Textbox Name="Textbox64">
+                <CanGrow>true</CanGrow>
+                <KeepTogether>true</KeepTogether>
+                <Paragraphs>
+                  <Paragraph>
+                    <TextRuns>
+                      <TextRun>
+                        <Value EvaluationMode="Auto">Cu serial number : </Value>
+                        <Style>
+                          <FontSize>8pt</FontSize>
+                          <FontWeight>Bold</FontWeight>
+                        </Style>
+                      </TextRun>
+                      <TextRun>
+                        <Value EvaluationMode="Auto">=First(Fields!cuserialnumber_KRAPrintLog.Value, "DataSet_Result")</Value>
+                        <Style>
+                          <FontSize>8pt</FontSize>
+                          <FontWeight>Bold</FontWeight>
+                        </Style>
+                      </TextRun>
+                    </TextRuns>
+                    <Style />
+                  </Paragraph>
+                </Paragraphs>
+                <rd:DefaultName>Textbox8</rd:DefaultName>
+                <Top>0.87163cm</Top>
+                <Left>0.0399cm</Left>
+                <Height>0.44125cm</Height>
+                <Width>7.01146cm</Width>
+                <ZIndex>1</ZIndex>
+                <Style>
+                  <Border>
+                    <Style>None</Style>
+                  </Border>
+                  <VerticalAlign>Middle</VerticalAlign>
+                  <PaddingLeft>2pt</PaddingLeft>
+                  <PaddingRight>2pt</PaddingRight>
+                  <PaddingTop>2pt</PaddingTop>
+                  <PaddingBottom>2pt</PaddingBottom>
+                </Style>
+              </Textbox>
+              <Textbox Name="Textbox65">
+                <CanGrow>true</CanGrow>
+                <KeepTogether>true</KeepTogether>
+                <Paragraphs>
+                  <Paragraph>
+                    <TextRuns>
+                      <TextRun>
+                        <Value EvaluationMode="Auto">Cu Invoice Number: </Value>
+                        <Style>
+                          <FontSize>8pt</FontSize>
+                          <FontWeight>Bold</FontWeight>
+                        </Style>
+                      </TextRun>
+                      <TextRun>
+                        <Value EvaluationMode="Auto">=First(Fields!cuinvoicenumber_KRAPrintLog.Value, "DataSet_Result")</Value>
+                        <Style>
+                          <FontSize>8pt</FontSize>
+                          <FontWeight>Bold</FontWeight>
+                        </Style>
+                      </TextRun>
+                    </TextRuns>
+                    <Style />
+                  </Paragraph>
+                </Paragraphs>
+                <rd:DefaultName>Textbox27</rd:DefaultName>
+                <Top>0.87163cm</Top>
+                <Left>9.80148cm</Left>
+                <Height>0.44125cm</Height>
+                <Width>7.77467cm</Width>
+                <ZIndex>2</ZIndex>
+                <Style>
+                  <Border>
+                    <Style>None</Style>
+                  </Border>
+                  <VerticalAlign>Middle</VerticalAlign>
+                  <PaddingLeft>2pt</PaddingLeft>
+                  <PaddingRight>2pt</PaddingRight>
+                  <PaddingTop>2pt</PaddingTop>
+                  <PaddingBottom>2pt</PaddingBottom>
+                </Style>
+              </Textbox>
+            </ReportItems>
+            <KeepTogether>true</KeepTogether>
+            <Top>23.42471cm</Top>
+            <Left>0.3146cm</Left>
+            <Height>2.11817cm</Height>
+            <Width>17.7615cm</Width>
+            <ZIndex>1</ZIndex>
+            <Visibility>
+              <Hidden>=Microsoft.VisualBasic.Interaction.IIF(First(Fields!cuinvoicenumber_KRAPrintLog.Value, "DataSet_Result") = "", True, False)</Hidden>
+            </Visibility>
+            <Style>
+              <Border>
+                <Style>None</Style>
+              </Border>
+            </Style>
+          </Rectangle>
         </ReportItems>
-        <Height>23.24832cm</Height>
+        <Height>25.54288cm</Height>
         <Style />
       </Body>
       <Width>18.52485cm</Width>
@@ -10005,7 +10446,7 @@ End Function
     P3+8va82r3UVPIM2pZIpicOIBCC5EqXMU3LE7GpJNuvVDiqGdoUpysYEdos0KSkQmxtKDS+gZiZUDUjbyZSuGdpS57Rh/InlQCdRNKd6OIO4M4P9qYG/TFRZVnK4VfxYg8SRwQ==
     tAAmQJNgz3QOaGe2dRzaQSTYipTorViSgHoDyCtlDNOnbk2P0nWo+G45UPHUJ5XBUwWmZznXDoDX80EKqXBI0CkOw8InQ6Yk7tmhgh7iR3KvYuITgx8Nqvrx67wOIwx7lZYI9Q==
     xOHxipMphRdX8yM5FHPfFMPP9ly7NsSxT4IXODwAog2+gRMD0UGZ+SQZj7ALLyKvafHLCDPmQvL/L8IN8mufAGj3DqKiLc+iCxF7tWEkLTrt/q7NimlPs5uxBSSHZAbLTCQs4g==
-    LRl1ft/rT1BLAwQUAAYACACDWMJUGagFCtMPAACf3AAAEQAAAHdvcmQvZG9jdW1lbnQueG1s7V3ZcuO4Ff0Vl/KQJ4+wL664U1xnuqZn4rQ7k6RSqS5aom2lKVJFUnZ7UvmyPA==
+    LRl1ft/rT1BLAwQUAAYACAD9a4FUGagFCtMPAACf3AAAEQAAAHdvcmQvZG9jdW1lbnQueG1s7V3ZcuO4Ff0Vl/KQJ4+wL664U1xnuqZn4rQ7k6RSqS5aom2lKVJFUnZ7UvmyPA==
     5JPyCwE3LRTtUBKlJiW+SNwAAhf33A0X4H///Z/f/f7r1Lt4csNoEvjXA/gdGFy4/igYT/yH68E8vr8Ug4sodvyx4wW+ez14caPB79/97vlqHIzmU9ePL1QFfnT1PBtdDx7jeA==
     djUcRqNHd+pE300nozCIgvv4u1EwHQb395ORO3wOwvEQAQjSo1kYjNwoUm8zHP/JiQZ5ddPN2oKZ66ub90E4dWJ1Gj4Mp074ZT67VLXPnHhyN/Em8YuqG7CimkD1IfSv8iouFw==
     DUqKXGUNyv+KEmGd92ZFzJwC6RuHoeupNgR+9DiZLbuxa23q5mNRydNbnXiaeoPFEECy3xiYofOs/pYV1mn+OCs09bKWv10jBDVGJKliUaJOE9bfWbRk6kz85Yt3Is0KcSHdrg==
@@ -10046,7 +10487,7 @@ End Function
     v/f+yJsnvuMv2qdP6XYbjcSwJMOCIHD2MayM1GtnZYof1NndhmeG68UOEOdKCh5mT8y2wHgrajfgdNeXB/G7Su47QjiucZmVxRlWe9JQkjaDFEBBz37j3QqptUnzTsutDuzZ2w==
     7phh6wXdJsMeMA5Z/pR3oxso5wFrd6QwsuULkiyM5Cpf7kj1mCL9o3vvhq4/cpcMmL13cBGmGb7h+3Gx5cZ9EMT1ShSC87V3pJ+PXnl+sUnOa6/YKLBYUf1w+2uOZCgzKD+myw==
     bLDMEDpWpRdy/EEBKqkzmF0PKEufTjl5cZYhfXGafEg7jeqmsM56s7iZtXVx+jCP09OiK0o4REtZsPzedDyJPffmITtRqiT5OnTyqonv3kzikWo9ZgvJkQ12engXjF/SA1Vmng==
-    7FHx7n9QSwMEFAAGAAgAg1jCVGez/OcSBwAA3iEAABAAAAB3b3JkL2hlYWRlcjIueG1s7VnrbuM2Fn4VQf1RoIBHF8uybIxT2LKdCZqkhpPtFGiLAS3RtjoSKVC0nbTok/XHPg==
+    7FHx7n9QSwMEFAAGAAgA/WuBVGez/OcSBwAA3iEAABAAAAB3b3JkL2hlYWRlcjIueG1s7VnrbuM2Fn4VQf1RoIBHF8uybIxT2LKdCZqkhpPtFGiLAS3RtjoSKVC0nbTok/XHPg==
     0r7CHpKifE3GcdwWnXaAiXg737nz0OT/fv/v268fstRYYlYklHRM541tGphENE7IrGMu+LQWmEbBEYlRSgnumI+4ML++eLtqz2NmAC0p2qhjzjnP25ZVRHOcoeINzTGBuSllGQ==
     4tBlMytmaAWYWWq5tu1bGUqIWdLnSXQCAlDxBcMaBDneHkiWRIwWdMrfRDSz6HSaRFjDAIhjb4mxyvfFOIiwoixW5KKVMxrhogDIEJElKjRcdpRSGWIfF3kN0HPEk0mSJvxR6g==
     p2EoeIGRdglRqwQSJG0lUPnRFOwYvoqkT6NFhglXFmU4BRkoKeZJvlbjVDSYnGuQ5XNKLLN07YJjvfiUD/rKu2vAEyLreUTHPsIjAqKiOEaEbZ6HsmR1mmk2jOs0Xgbg7gLksw==
@@ -10064,7 +10505,7 @@ End Function
     jWq1OIwxI1H3mhBjkESl3w1Hr4lul5cM5fMkGjJYIZRH7dnGyDWNPhavfukkFDYbMsNdOEREfH3R+rwAr2W7AQU/A5CxYPtvLse/tF68hZaI+LO82yo0sgSPCJ1FB0xR+ss+7A==
     L71IkBhif8FsLB8tl3iMi+QXeUUvlIaFym8H7F4NMUZXc0iZonLHJn7Z3RJwkib5MElTwUK0DdbG2QSDwBDpjuQMgXxd8LKlDP6rG3Rtu+X2amHDDmue3RzUui2vWWvag6Znew==
     gRM64W+CGtJjUYiIQ2k/T87wsq3eDJRyUiL9lTJaSgshLBRwzKO5aE5BwTEYqySqZqxtC4heAbuJMVnd0Fi/SwmAhynLxBfEMh4k+0cthLLKs1lurQFyVvBLTDNDNMDGIJRkgA==
-    liB+uVavEeOECtEUn5Rsj1hqyNJil034L+c2smSzr1JU7X9yd6y2xc2TwtO/mHmkPky/h/xJx4p5zC7+D1BLAwQUAAYACACDWMJUKcjO5B8EAAAGDwAAEAAAAHdvcmQvZm9vdA==
+    liB+uVavEeOECtEUn5Rsj1hqyNJil034L+c2smSzr1JU7X9yd6y2xc2TwtO/mHmkPky/h/xJx4p5zC7+D1BLAwQUAAYACAD9a4FUKcjO5B8EAAAGDwAAEAAAAHdvcmQvZm9vdA==
     ZXIxLnhtbOVX227jNhD9FUN92CdHlCzFlrHOIr5kEyRZBPFit0BRBIxE2UIoUiDpWxb9sj70k/oLHUqkfIk3SOyXFn0xLzNz5soZ+e8///r4aZnTxpwImXHWc7wT5DQIi3mSsQ==
     Sc+ZqbTZcRpSYZZgyhnpOSsinU9nHxfdVIkGyDLZXRRxz5kqVXRdV8ZTkmN5kmex4JKn6iTmucvTNIuJu+AicX3koXJXCB4TKUHRALM5lo6By1+i8YIwIKZc5FjBUUzcHIunWQ==
     0QT0AqvsMaOZWgE2OrUwHMwXrGsgmrVBWqRbGWQWKyHeorcSGfJ4lhOmSo2uIBRs4ExOs2LtxqFoQJxakPlrTsxz6tQp8ILjcjAUeAHLGvAt5ieVUE4ry19H9NAbMqIhaom3mA==
@@ -10075,7 +10516,7 @@ End Function
     xIpEp36rE6CgbSgFhcqbcgpa9THh8R0W9Zu5aEceOm1F/qgzgsyHnQiNzlF0fjEA94ftyHq0i4IV7mdMfx8BUiEI1OstLgo4QyesmiKTqPdBj7r1iEtWDMNJNhmew/dCwYWS7g==
     a965H3ROlvBxM+05LiB2ISDf4eHcl8K/5lQ785v3e0mrYmtPe0MMxPI5Ki7IFVxdDXvOj347Qn7kB82WF5w2A98/bUYoQM1w1Iq8KApRux/8YZNDlsrEpC4H2Aw4UwBfcsTVrw==
     Ke/YtGDPD/e0YHfNWdiCvCvLr9Nu9X3P+XmV3r28uh+SFM+o2qCUyEbB1rD4wsfQk8pPE5NiU9t7zXhH1auzvZEvXa34KnXGeRvKOoJu/d7+05HccvF/7ItmMKNmYzbtmV1uzQ==
-    +a92Xy/CTpM9JnpDbzDyt0xEI9T2LrZM3OHaMNEw/9TEC84VEXbamwb0bKmeHQjyeSB3Lu0TfeEW/Ik9+wdQSwMEFAAGAAgAg1jCVL4lCGIxBQAAyhkAABAAAAB3b3JkL2hlYQ==
+    +a92Xy/CTpM9JnpDbzDyt0xEI9T2LrZM3OHaMNEw/9TEC84VEXbamwb0bKmeHQjyeSB3Lu0TfeEW/Ik9+wdQSwMEFAAGAAgA/WuBVL4lCGIxBQAAyhkAABAAAAB3b3JkL2hlYQ==
     ZGVyMS54bWztWOtuIjcUfhU0/bFSJXYuDFctWcEMJNGGFAW6qdRWkZkxMIrHHtkGkl31yfqjj9RX6PHcuCZLgKjRtn/w2GfOdz6fi4+Zv//868PHh5AU5piLgNGmZr43tAKmHg==
     8wM6aWozOS7WtIKQiPqIMIqb2iMW2sezD4vG1OcF0KWisYi8pjaVMmrouvCmOETifRh4nAk2lu89FupsPA48rC8Y93XLMI34KeLMw0KAIQfRORJaChduo7EIUxCOGQ+RhCmf6A==
     IeL3s6gI6BGSwSgggXwEbKOSwTCgz2kjhSjmhJRKIyGUDpkG38duouIybxZiKmOLOscEODAqpkG03MahaCCcZiDz5zYxD4mWh8C0j4uBy9EChiXgPvT9RCkkCfPnEU1jj4goiA==
@@ -10089,7 +10530,7 @@ End Function
     FMWjArujfbndil2xTtm+ovW9zUZSnQF5cu3uWHvUjIskPknVQAMqW3atbNf3KhvDMp2SXevWnHbHLnerbSigUtVudZx2veXa5ndQNsq1b7Fw0uRcLwdF9lUK4g3mfh9NTnf1Mg==
     rUqlZFds0/ivt4vMrW8+5zOir3J7WrX0xJ1o81L0NMKY+M4UKXn6NIyJjfBEfVzS94GAf8uSD5VHd5Ppt847hcJvPxZaHI0CL37sdW7OO92fbnqtYcw1xziCs8AR4lmz2UJRGA==
     Vbh02fZqQ6esr2Ky2cLNY/2HlzH9BsBTXtO3YviycO0Tmeufeyo4g0Oi8y8F4lsqe8UjaSH68lvCkV8UTt6BkmNvrf+scVYDz76i7Lgdmq7pdNZvh27FMCruGr/1pVV+qWQffg==
-    KjtUq4q/XEGzSi9WeUBGyUx8WbYzLVtyxMbi5ieSfNNTn5/9A1BLAwQUAAYACACDWMJURuixrGAIAACoSAAAEAAAAHdvcmQvZm9vdGVyMi54bWztXN1u2zoSfpXAe3GuXPP/Jw==
+    KjtUq4q/XEGzSi9WeUBGyUx8WbYzLVtyxMbi5ieSfNNTn5/9A1BLAwQUAAYACAD9a4FURuixrGAIAACoSAAAEAAAAHdvcmQvZm9vdGVyMi54bWztXN1u2zoSfpXAe3GuXPP/Jw==
     OOmBJEpt0DYImqJdYLEIFFt2hMqiIClJ08U+2V7sI+0r7MiWFCdxWttRUzvITWVK5HD4zXwzQ0bq//7z3z//+jZN9i6jvIhtetDDr1BvL0qHdhSnk4PeRTnuq95eUYbpKExsGg==
     HfSuo6L31+s/r/bHZb4HY9Ni/yobHvTOyzLbHwyK4Xk0DYtX03iY28KOy1dDOx3Y8TgeRoMrm48GBGE0+5XldhgVBUzkhellWPRqcdP70mwWpfBwbPNpWEIznwymYf71IuuD9A==
     LCzjsziJy2uQjUQjxoL6ebpfi+i3ClVD9ucK1ZdmRL7KvPMhxg4vplFazmYc5FECOti0OI+zm2VsKg0enjdCLn+0iMtp0mtNgNnjbGDy8AouNwJXUX80HzRN5pr/WCJGK1ikEg==
@@ -10111,14 +10552,14 @@ End Function
     VntllGPmIWywI2FnK6SvIL1zJqX2XcE9R+x+FFqE+Mnj0KaMXOK693aLzaLWpeny7LmeHtXHac2HR2D9Isovo97rvTuqbMYHZzi0F2nZGSGQBJMqKVYrdX1qAuYggjHXzFOBdg==
     tDSw+WQICcHlMyFEi/GzYkS7qi4ocSuhbXqI0k1diSiEc4ZXewfSoYFGyvV8Q32mPddxpVKE+IQTIyE57L4DV8Bud0X5JOXhQ1VIZ0ckO3c80k3CoFhoqKDUanQjbqBxoH3D3Q==
     6gUp6SqNHSghOfE4UpjvPt1m0L7w7UG+dXz68YQnH53wRSKCgCxitQ9jXMSBHdXZPvKYkZ5CQlHh+xwHSLjBLn8Ycwva7ebLtp54/NKUNjfMrzrUqC7z/0Nj3Q9b1wEosLaM8g==
-    Zs21V3xvz4MadhbfveLOzSbcNKC2SxuD9v8HUEsDBBQABgAIAINYwlR2j5v3zQEAAFIGAAARAAAAd29yZC9lbmRub3Rlcy54bWzFlEtu2zAQhq8icG+TchOjECwHiN0G2QXJCQ==
+    Zs21V3xvz4MadhbfveLOzSbcNKC2SxuD9v8HUEsDBBQABgAIAP1rgVR2j5v3zQEAAFIGAAARAAAAd29yZC9lbmRub3Rlcy54bWzFlEtu2zAQhq8icG+TchOjECwHiN0G2QXJCQ==
     GIqyiIgcgqSs+mxd5Ei5QkdvNw0MJ150I75mvvmHI87b79fVzS9dRnvpvAKTknjOSCSNgEyZXUqqkM++k8gHbjJegpEpOUhPbtarOpEmMxCkjxBgfFJbkZIiBJtQ6kUhNfdzrQ==
     hAMPeZgL0BTyXAlJa3AZXbCYtTPrQEjvMdqGmz33pMfpf2lgpcHDHJzmAZduRzV3L5WdId3yoJ5VqcIB2Ww5YABzcCbpEbNRUOOSdIL6YfBw58TtXLYgKi1NaCNSJ0vUAMYXyg==
     Tml8lYaHxQDZn0pir0syliC+uqwGW8drHCbgOfKzzkmXnfLTxJidUZEGMXqcI+HvmIMSzZWZAn/pao4uN77+HGDxHmB3lxXnzkFlJ5q6jHZvXkZW864/weqLfJyav0zMU8Etvg==
     QC2S+50Bx59LVIQli/DWo+a3JkcdJ6qTcLBo4KXljgdwBLdUlpJZ3NpZXGI/yx5Twtjt7eLnckP6rYdm68cV2yy/DVuPW5nzqgxHxi3kwTWDt1ygQLTleZDYHLA/0vWKjgad1Q==
     oKQ/c51F++1Vf5SAABOUqdq28fQ+GfafcvlQ1Km8prlf/wFQSwMEFAAGAAgAAAAhAMfO8qi5AAAAIQEAABsAAAB3b3JkL19yZWxzL2hlYWRlcjIueG1sLnJlbHOMz8EKwjAMBg==
     4LvgO5TcXTcPIrLOiwheRR8gttlWXNPSVtG3t+BFwYPHJPzfT9rtw03iTjFZzwqaqgZBrL2xPCg4n/aLNYiUkQ1OnknBkxJsu/msPdKEuYTSaEMSReGkYMw5bKRMeiSHqfKBuA==
-    XHofHeYyxkEG1FccSC7reiXjpwHdlykORkE8mAbE6RnoH9v3vdW08/rmiPOPCmld6S4gxoGyAkfG4nvZVBfLILtWfj3WvQAAAP//AwBQSwMEFAAGAAgAg1jCVAsxCBPOAQAAWA==
+    XHofHeYyxkEG1FccSC7reiXjpwHdlykORkE8mAbE6RnoH9v3vdW08/rmiPOPCmld6S4gxoGyAkfG4nvZVBfLILtWfj3WvQAAAP//AwBQSwMEFAAGAAgA/WuBVAsxCBPOAQAAWA==
     BgAAEgAAAHdvcmQvZm9vdG5vdGVzLnhtbMWUzW7bMAzHX8XQPZGctcFgxCnQZCt6K9onUGU5FmqJgiTHy7Pt0EfqK4z+jNcVQdocdrEsivzxT9Hm2+/X1c0vXUZ76bwCk5J4zg==
     SCSNgEyZXUqqkM++k8gHbjJegpEpOUhPbtarOskBgoEgfYQE45PaipQUIdiEUi8KqbmfayUceMjDXICmkOdKSFqDy+iCxax9sw6E9B7TbbjZc096nP6XBlYaPMzBaR5w63ZUcw==
     91LZGdItD+pZlSockM2WAwawCGeSHjEbBTUhSSeoX4YId07eLmQLotLShDYjdbJEDWB8oeyxjK/S8LAYIPtTRex1ScYWxFeX9WDreI3LEXiO/KwL0mWn/DQxZmd0pEGMEedI+A==
@@ -10355,58 +10796,59 @@ End Function
     tF/uaS06IrssSy87HMDPmKG52Bg3AHHq2tI0jZL4YORuQE3l9Xz+qayNDGr+eXu0rD/qgf1fPTwQ6hrrKzt5FNHzFgfbA2G1URyoRmFdbKDnFk4Cs9rQYVXm3HjQEPRbNWA1Tw==
     xSmPTwEt+rGS4oC+GFf7anFzG/GUBfy+AweS+M3HIxkQ6p8tW5NAPJHqm5LOeNNQ8Rj7LIJMPJSzwiluYINy5xQdR9kcCYyvSk8uU5y8O2gd2I6tjg1MQKhvJL/PPb9j1UDvMQ==
     Ut6xwPiCENblCVRoYE/LPUoyrngFj2Gga7EHp0ATb5L6wem1SLSExri3nly1VdTzDVMew5yWx+pDMJyCc2I5eaii3XODYXrhHv/YcKv0D8vRwMnwQmQmL/xlN/0lHGZrBgv6mA==
-    ylOSJvDmv9uteQg79v625/j5vrwo6jYWJF5uTlaKU+MC1rwB+dQmLE6N23R9uIxFdIt1xrysjXv5nD4U1eLjbM6/0yKe4LQ/03+u+gNQSwMEFAAAAAgAg1jCVOX3eU2vCwAAoA==
-    cAAAEwAcAGN1c3RvbVhNTC9pdGVtMy54bWwgohgAKKAUAAAAAAAAAAAAAAAAAAAAAAAAAAAAxV3bblu3EuVzgf5D0PdeIl9RuCpsp0mMk7hurKbNU6DacmrUN0hyTvzzbYekGA==
-    bpJzpQwUhhNpc82sxdkkNzmk5H/+3nM/uk/u2l25J+6jm7m5W7hLd+tu3A/uK/fUfeO+g/+fQMmNO4Pr51B64z6E0nu3dBfua0Btw7sf3dh96b5we+7YTcHXb4CeA/4N2N6F1w==
-    S/d7YDqBcv/uyYr5Bjijvzm8/h6uXQLXHGwW8HsByK/BzwOUTVdlC7hyE1i+BVz2v4D3p3D9Cq4t3Ht3GEq95iW8ew2vrwH53v0Pfk7dK0BvuU2o4YYbweuvVjV4Aj977iWgpw==
-    YOtjkq/Hsn1gvAOWy8AzAZ/P4PcManAdIrUECxmzB5waT1bu91CzPwCh0ZCwOi3Zc6npAGyu4GcJ+EPAL+BVtJpDa7gFvITw/LIXG2tWq0VqVFAxOISya4jfFCL1ALE8h595iA==
-    5AJ6yFgo98ySBz3fSOAbiXwjE9+GwLch8m2Y+DYFvk2Rb9PEtyXwbYl8Wya+bYFvW+TbFvgOwv9/gdVZGNfvQ/+OvUyLbDVwXvvU5N5mtbCo0/XpZH8AUZ6G5+GfbMRqHK2o9Q==
-    2KNDihWF1+uyxek4PK9npJ5UTvNnDxY+KQ41TubX1Ts9Lfy1F/AUmSNtA8O0/LgnKzcVBw6r06KLx08w45qGp2mtIJe0fEMrznvSgvXAYVnLUFpqOahoYhieUxe9l+HdLMyWPw==
-    IL2oLm85Ww8c3xG0+n3QV/Ok663/bKHxS8WvLqd5dHE7gn8v4Ep6HrZ8ZTnGV3uw8LVzrxYhc0rzr4Q/DGubB5IzldOM2YOGjxrT63KaTzemvwLEh7CS+xmsLsKqr2XFUS035Q==
-    za6AasU8WqtI18Kz7SncuSn8zgarRT2WU4V55jXdguUtjDW3IYOwXGURWj04DtNCeeR0nMBMxaNm6HOhLG05a2s9E9UucJTErGsHJ6HVLEPeZAbl3wr4N+HuXoan+Tzc3RjR4w==
-    sL79Y5XpsNu0tdExrauVirnFtk+77v6cut9g1HvuJo3CXNLyD6103qk4tAiOTVent/CEmjAxavucbNGq0rCsp5KKmd6yR7U9xlJE5fjZoqWNjT4SUr3vAF8yDq8k3yWq9pJXKA==
-    vndiuTceEVkkLxbWkcg6UrBis0AOvyGybihYsVwch98UWTcVrFhGjsNviaxbClYsL8fht0XWbQUrlp3j8Dsi646CdcfIuiuy7ipYd0XWOMNbhnmnz7zMQ48/X833tVhMCecZ1w==
-    dAJPw+MBb3w/9J0QpX29U5LGrAm8/xRmzxLCc8heeNZnqzl7y5ZKMJZspfOex2EJwbFRo3mNj88v7CrmHXvaYRi6DvWTjbfmmSZh3XLFxqzFYKyYp5r7HkqHLWD4PvosEZz9UA==
-    L3a99Ufpyvm898WeasZLCM8le6lZP4WstZ+P+NzXm5XKfZjx5t6kQUV2jbdWwSzMicp5K349sWAWpd8XUNtbqLMf016FVkKtr7RIz6332qcm3yerhUUd1RrqTCjVhnQ4r0jrsQ==
-    1OFzYB/BMmZ7noVVQt6J2nfXn19nD3Ybr6+HyaLVP00XoQfYNXO2snaeuaxDzmf9FHAx0zmB37swAvLlXovkwcKXVepwMj9d78uQSxrGaD+cpPGtk4/vUOX6XmIdHkNNXcM4Cg==
-    XIV52TzMNv0+5UOhX8JEdbKnkjv3+VReX/F+W1Tr5eHz892fTVqGHOA5xGAWYjCHWORnwdhskVTYWNZTWcakx7JHtS7Gk9DersFeF2EJ3yqVGdbRR8VWa2fXS8c1roHy6ghfFQ==
-    nQR/Z8H3UehVV9DH0hnCmCUaq1CRQ+PNrmAYVz1aq4iOoWz7LpTGWaANr1U3ZCj1+eydX298DLPetLLCrnouHF16zCczyzE/PR/osb/Xcq84D2plpdSfuHhOtuwhfHmpBPeg4Q==
-    O4Br8WyKxNwiaQ2YV42avJfLl9PM1G7waWhP5SnMlNWJbUtCRE7Ji411GHMdUqOCjvmfYTRuT99SJZGNsuK957wAVYJ5p7IJFI6uA5ZhkL3wrJr5jt0GU2afWdk90LGzza7WYQ==
-    xuvgz4qXWd9WK40ZauI8abmfsqxPBb52p4fGjlimkcDU7u7Q2A2WaUNgand0aOwmy7QpMLW7ODR2i2XaEpjanRsau80ybQtM7W4Njd1hmXYEpnaHhsbusky7AlO7K3MaRoD/fw==
-    trlbzRNLu7ESl9g1Hmsd99Df/RMy7tsMRxK8JHJRVqX3CYJor3mPGLL0lVYceYWCr0HiVTxfRZdlf5pMV4s8DRmiM4h5PF02RUbzHitcl4YNU5yyebWm+npmbS0wv4dhRnuP+g==
-    xsqyf9xS4liwLAuBh37KRexRyCvH/J+Pb5ljljGZlfeEccfZ+tnKqs5pyZjMzXvCuPkTQLqTRfazRJZzPLbzQv0nhN6FnjYPthchjjFL6WfedJnn5Cy1HFmVjOE5pYx1eT2WDQ==
-    x5m4E4dnWZIHGz5+8tHGsK7GHIU+O7tmPO6tdi6LhcVXxtdaNQzrasTjq7eza+biS6+pUn0lRNxtl7zYmYe7/DqkRgkXi5cwU8hncIbv4q7qKXFCJ1ofuXgiPY2Uqeb49biXiA==
-    W2h9D/c0uXKai4sGtjM2VMmXU3trfD15C373D6+31iOtpc7BljMFLCJai6E+PUuv0nQWxK64tdQrx1jpGtQ9Ab8+ZJf7zi+ga+ry/vQQTZd5Ds7SwpNbmYzhebn2yuUjk2oZIw==
-    ZTbp+stWuvxqGw+L51bXxMXPCS+KUzDD8WCswMRVt+wJ48/nIVL02mvRf4ts/f0KJb5d+M9mvQ46Fi5+ymbMlHn/nKWFJ0dbxvC83H1LVnmncIxcG/ofIjX+2nq0Zbh/Tje/lg==
-    TfdVg5JXxnQr0dhpV+ltj7R5p9SduLPqyYBfH67Sawut7zYrgJfTXJaxl9aX5r7YuV3aiw1Pnwy26kxn1OO6Io+7tB+rRTwLYGV5HLX5jvZa9qin2xE1j6DjoMfi8wprhPUeuA==
-    OY8mqj1Mbb9s5w78On4RMp7Xwd+Dohfja03aj9WCW9Fa1ZYzZtpah2vn4FY97R2mPeixeNuxauNmLLSvHitpfmRV/tZNQ0uJ9U/5Cs6P1SI+Ia0sWN/UoYctTd5Z4rMo+nPnnA==
-    58fxYz0J/1/UdZhhekx/j1d3bvTnGfCz+v333eqv99MEj9kOrAza9tDr9/FjYs9wvg0zODy+Vgs6A8mxrK9UypTKlj3KuVj7OYJ/vtErR3/aQoPyynTeqLWh/k7Y8NSpCNu9tg==
-    eajXtT33uZdRo/0VzA7eCaNWjxWuW8P2OKq5uOute2sh34N8EkVu3xosdsalp11rrOvYWmxsOvVx1LdjvUWrdZ32q/dBxben3faw2rKVcvu12kkZzJ52bfWky71a2nu/AimHKg==
-    3wEZ2eZVe6Is21J5XkskLSz1SlXbc7Fzelz98xqbs9Og4veFaLz1qcixsaC1qnrOsnB1tNtwOTlbNHEvoy7FvBWtWWKTZvLlSdF6Bl+WtjP32lo7G6b12vD07NcSEX78lbRa7Q==
-    5BFfpx0/7Uthh38pI58+X7BxKWMqe7Dh63NwGgZe4/Ngex1Gfb+Hc25W3eOhrkefCv1oKPvqteRGxp4aPA+2PudzC1hdHOw2XnUPE63X5/Pj2ZCrz08tvfIe62Ed+tjrkcFq4Q==
-    vwsktte5w791KOIOwjN++K1h9RXP3qKwuYj/3p1F0PNhgMSvx/kFbtH6fhF2X2Zu2WCpEu+ftmr3M6Ro7RVRx88VpXLNaeCxEV9+ykjHwGmkToHn2uuxpTbZM6eLqg2mS8KWug==
-    ZM+SLt3uSK1QZ9Vq1bJxqo9Du6bUtaWlCsyaYyu/L6RW/TP827Z9rU2pTM/E6Y2fA8zvx0xZyd9aWnheh/bn53f8feb0aH3wuvVKuPphfRPvg7q+1q4AxmxpyYFZ29hi7oznjA==
-    GIk5ebLxY/GkUZIGS8zL7GHLX5ZjzLWH+kmLP0Xj5znqv6EX16e6vw84dv8CUEsBAi0AFAAGAAgAm4KeR+geB0jHAQAAsgsAABMAAAAAAAAAAAAAAAAAAAAAAFtDb250ZW50Xw==
-    VHlwZXNdLnhtbFBLAQItABQABgAIAAAAIQAekRq37wAAAE4CAAALAAAAAAAAAAAAAAAAAAAEAABfcmVscy8ucmVsc1BLAQItABQABgAIANxhulSBOrzXaQEAAPcHAAAcAAAAAA==
-    AAAAAAAAAAAAIAcAAHdvcmQvX3JlbHMvZG9jdW1lbnQueG1sLnJlbHNQSwECLQAUAAYACADcYbpUGagFCtMPAACf3AAAEQAAAAAAAAAAAAAAAADLCQAAd29yZC9kb2N1bWVudA==
-    LnhtbFBLAQItABQABgAIANxhulRns/znEgcAAN4hAAAQAAAAAAAAAAAAAAAAAM0ZAAB3b3JkL2hlYWRlcjIueG1sUEsBAi0AFAAGAAgA3GG6VCnIzuQfBAAABg8AABAAAAAAAA==
-    AAAAAAAAAAANIQAAd29yZC9mb290ZXIxLnhtbFBLAQItABQABgAIANxhulS+JQhiMQUAAMoZAAAQAAAAAAAAAAAAAAAAAFolAAB3b3JkL2hlYWRlcjEueG1sUEsBAi0AFAAGAA==
-    CADcYbpURuixrGAIAACoSAAAEAAAAAAAAAAAAAAAAAC5KgAAd29yZC9mb290ZXIyLnhtbFBLAQItABQABgAIANxhulR2j5v3zQEAAFIGAAARAAAAAAAAAAAAAAAAAEczAAB3bw==
-    cmQvZW5kbm90ZXMueG1sUEsBAi0AFAAGAAgAAAAhAMfO8qi5AAAAIQEAABsAAAAAAAAAAAAAAAAAQzUAAHdvcmQvX3JlbHMvaGVhZGVyMi54bWwucmVsc1BLAQItABQABgAIAA==
-    3GG6VAsxCBPOAQAAWAYAABIAAAAAAAAAAAAAAAAANTYAAHdvcmQvZm9vdG5vdGVzLnhtbFBLAQItABQABgAIAAAAIQCqUiXfIwYAAIsaAAAVAAAAAAAAAAAAAAAAADM4AAB3bw==
-    cmQvdGhlbWUvdGhlbWUxLnhtbFBLAQItAAoAAAAAAAAAIQAyUn61CgAAAAoAAAAVAAAAAAAAAAAAAAAAAIk+AAB3b3JkL21lZGlhL2ltYWdlMS5iaW5QSwECLQAUAAYACAAAAA==
-    IQB3+8dLoQwAAKB2AAAaAAAAAAAAAAAAAAAAAMY+AAB3b3JkL2dsb3NzYXJ5L2RvY3VtZW50LnhtbFBLAQItABQABgAIAAAAIQDSdzsz9QAAAHUBAAAcAAAAAAAAAAAAAAAAAA==
-    n0sAAHdvcmQvX3JlbHMvc2V0dGluZ3MueG1sLnJlbHNQSwECLQAUAAYACAAAACEA/d67Ey8DAADiCAAAGgAAAAAAAAAAAAAAAADOTAAAd29yZC9nbG9zc2FyeS9zZXR0aW5ncw==
-    LnhtbFBLAQItABQABgAIAAAAIQCD0LXl5gAAAK0CAAAlAAAAAAAAAAAAAAAAADVQAAB3b3JkL2dsb3NzYXJ5L19yZWxzL2RvY3VtZW50LnhtbC5yZWxzUEsBAi0AFAAGAAgAAA==
-    ACEAwdpdKH8IAABTIAAAEQAAAAAAAAAAAAAAAABeUQAAd29yZC9zZXR0aW5ncy54bWxQSwECLQAUAAYACAAAACEAfHNqluAAAABVAQAAGAAAAAAAAAAAAAAAAAAMWgAAY3VzdA==
-    b21YbWwvaXRlbVByb3BzMi54bWxQSwECLQAUAAYACAAAACEANWUYWKQAAAD+AAAAEwAAAAAAAAAAAAAAAABKWwAAY3VzdG9tWG1sL2l0ZW0yLnhtbFBLAQItABQABgAIAAAAIQ==
-    AFyWJyLCAAAAKAEAAB4AAAAAAAAAAAAAAAAAR1wAAGN1c3RvbVhtbC9fcmVscy9pdGVtMi54bWwucmVsc1BLAQItABQABgAIAAAAIQCCDkVhmRgAAOTBAAAYAAAAAAAAAAAAAA==
-    AAAATV4AAHdvcmQvZ2xvc3Nhcnkvc3R5bGVzLnhtbFBLAQItABQABgAIAJuCnkex6iGJOgEAAEgCAAARAAAAAAAAAAAAAAAAABx3AABkb2NQcm9wcy9jb3JlLnhtbFBLAQItAA==
-    FAAGAAgAAAAhAJMf8Nt2DwAA0JEAAA8AAAAAAAAAAAAAAAAAjXkAAHdvcmQvc3R5bGVzLnhtbFBLAQItABQABgAIAAAAIQAk77ZEEwEAAP8BAAAUAAAAAAAAAAAAAAAAADCJAA==
-    AHdvcmQvd2ViU2V0dGluZ3MueG1sUEsBAi0AFAAGAAgAAAAhABmPyz/EAQAA7QQAABIAAAAAAAAAAAAAAAAAdYoAAHdvcmQvZm9udFRhYmxlLnhtbFBLAQItABQABgAIAAAAIQ==
-    AFtt/ZMJAQAA8QEAAB0AAAAAAAAAAAAAAAAAaYwAAHdvcmQvZ2xvc3Nhcnkvd2ViU2V0dGluZ3MueG1sUEsBAi0AFAAGAAgAAAAhABmPyz/EAQAA7QQAABsAAAAAAAAAAAAAAA==
-    AACtjQAAd29yZC9nbG9zc2FyeS9mb250VGFibGUueG1sUEsBAi0AFAAGAAgAm4KeRzEbVfvpAQAAYQQAABAAAAAAAAAAAAAAAAAAqo8AAGRvY1Byb3BzL2FwcC54bWxQSwECLQ==
-    ABQAAAAIAINYwlTl93lNrwsAAKBwAAATAAAAAAAAAAAAAAAAAMmSAABjdXN0b21YTUwvaXRlbTMueG1sUEsFBgAAAAAeAB4A3wcAAMWeAAAAAA==
+    ylOSJvDmv9uteQg79v625/j5vrwo6jYWJF5uTlaKU+MC1rwB+dQmLE6N23R9uIxFdIt1xrysjXv5nD4U1eLjbM6/0yKe4LQ/03+u+gNQSwMEFAAAAAgA/WuBVDU9cMIjDAAAdg==
+    dAAAEwAcAGN1c3RvbVhNTC9pdGVtMy54bWwgohgAKKAUAAAAAAAAAAAAAAAAAAAAAAAAAAAAxV1rb1s3EuXnBfofgnxv08hPFF4FttMkRhPXjbXp5lOgOnJqrF+Q5DT+890dkg==
+    onlJzpMysDCcWJdn5hzOJXnJIa/937/33Av3zV25S/fEfXUzN3cLd+Fu3LX7p3vqnrsf3I/w/xMouXZncP0zlF67L6H0zi3dufseUNvw6YUbu+/cP9yeO3ZT8PU7oOeAfw+2tw==
+    4eel+3dgOoFy/+nJivkaOKO/Ofz8E1y7AK452Czg+xyQ34OfeyibrsoWcOU6sDwDXPa/gM+ncP0Sri3cJ3cYSr3mJXx6Bz9fAfKT+wW+Tt1bQG+5TajhhhvBz09XNXgCX3vuDQ==
+    oKdg62OSr8eyfWC8BZaLwDMBny/h+wxqcBUitQQLGbMHnBpPVu5PULM/AKHRkLA6LdlzqekAbC7hawn4Q8Av4KdoNYfWcAN4CeH5ZS821qxWi9SooGJwCGVXEL8pROoeYvkZvg==
+    5iGSC+ghY6HcM0se9HwjgW8k8o1MfBsC34bIt2Hi2xT4NkW+TRPflsC3JfJtmfi2Bb5tkW9b4DsI//8HrM7CuH4X+nfsZVpkq4Hz2qcm9zarhUWdrk8n+wOI8jQ8D/9kI1bjaA==
+    Ra3HHh1SrCi8XpctTsfheT0j9aRymj97sPBJcahxMr+u3ulp4a+9hqfIHGkbGKblxz1Zuak4cFidFl08foYZ1zQ8TWsFuaTlG1px3pMWrAcOy1qG0lLLQUUTw/Ccuui9CZ9mYQ==
+    tvwF6UV1ecvZeuD4jqDV74O+middb/1nC41fKn51Oc2ji9sR/HsOV9LzsOUryzG+2oOFr517tQiZU5p/JfxhWNvck5ypnGbMHjR81Jhel9N8ujH9LSC+hJXcr2B1HlZ9LSuOag==
+    uSlvdgVUK+bRWkW6Fp5tT+HOTeF7Nlgt6rGcKswzr+kGLG9grLkJGYTlKovQ6sFxmBbKI6fjBGYqHjVDnwtlactZW+uZqHaBoyRmXTs4Ca1mGfImMyh/JuDfh7t7EZ7m83B3Yw==
+    RI/D+vaPVabDbtPWRse0rlYq5hbbPu26+3PqfodR75WbNApzScs/tNJ5p+LQIjg2XZ0+wBNqwsSo7XOyRatKw7KeSipmesse1fYYSxGV42eLljY2+khI9b4FfMk4vJJ8l6jaSw==
+    XqH43onl3nhEZJG8WFhHIutIwYrNAjn8hsi6oWDFcnEcflNk3VSwYhk5Dr8lsm4pWLG8HIffFlm3FaxYdo7D74isOwrWHSPrrsi6q2DdFVnjDG8Z5p0+8zIPPf7zar6vxWJKOA==
+    z7imE3gaHg944+eh74Qo7eudkjRmTeDztzB7lhCeQ/bCs75czdlbtlSCsWQrnfc8DksIjo0azWt8fH5hVzHv2NMOw9B1qJ9svDXPNAnrlks2Zi0GY8U81dx3UDpsAcPP0WeJ4A==
+    7Id6seutP0pXzud9KvZUM15CeC7ZS836LWSt/XzE577er1Tuw4w39yYNKrJrvLUKZmFOVM5b8euJBbMo/b6G2t5Anf2Y9ja0Emp9pUV6br3XPjX5PlktLOqo1lBnQqk2pMN5RQ==
+    Wo+lDp8D+wqWMdvzMqwS8k7Uvrt6+Dl7sNt4fT1MFq3+aboIPcCumbOVtfPMZR1yPuvngIuZzgl834YRkC/3WiQPFr6sUoeT+el6X4Rc0jBG++EkjW+dfHyHKtf3EuvwGGrqGg==
+    xlHgMszL5mG26fcp7wv9Eiaqkz2V3LnPp/L6ivfbolov9w/Pd382aRlygJ8hBrMQgznEIj8LxmaLpMLGsp7KMiY9lj2qdTGehPZ2Bfa6CEv4VqnMsI4+KrZaO7teOq5xDZRXRw==
+    +KroJPg7C76PQq+6hD6WzhDGLNFYhYocGm92BcO46tFaRXQMZduPoTTOAm14rbohQ6nPZ+/8euNrmPWmlRV21XPh6NJjPplZjvnp+UCP/b2We8V5UCsrpf7ExXOyZQ/hy0sluA==
+    Bw3fAVyLZ1Mk5hZJa8C8atTkvVy+nGamdoNPQ3sqT2GmrE5sWxIickpebKzDmOuQGhV0zP8Mo3F7+pYqiWyUFe895wWoEsw7lU2gcHQdsAyD7IVn1cx37DaYMvvMyu6Bjp1tdg==
+    tQ4zXgd/VrzM+rZaacxQE+dJy/2cZX0u8LU7PTR2xDKNBKZ2d4fGbrBMGwJTu6NDYzdZpk2Bqd3FobFbLNOWwNTu3NDYbZZpW2Bqd2to7A7LtCMwtTs0NHaXZdoVmNpdmdMwAg==
+    /PVgc7uaJ5Z2YyUusWs81jruoL/7J2TctxmOJHhJ5KKsSu8TBNFe8x4xZOkrrTjyCgVfg8SreL6KLsv+NJmuFnkaMkRnEPN4umyKjOY9VrguDRumOGXzak319czaWmB+D8OM9g==
+    DvWNlWX/uKXEsWBZFgIP/ZSL2KOQV475Px/fMscsYzIr7wnjjrP1s5VVndOSMZmb94Rx8yeAdCeL7GeJLOd4bOeF+k8IfQw9bR5sz0McY5bSz7zpMs/JWWo5sioZw3NS9fsFsA==
+    +6uMhW8d8fRniYpIvyt6Uazkr4sdIMpTn52vTS8jrn0RrC7Ck0Wv3GqVdNvZWtVp1XX7gPXv1NIebPi4k2xjwDRiu/S0Qj2aPgOgV/ebyydPKLv2/G60/bq6g+fuPvSpS4ZZjw==
+    9bWyeC576zMlLuXYsHoNZw9xfx3PnSYPNnx8n9nGsK7GPLb12dk146Npq53LTWPxlfG1Vg3Duhrx+Ort7Jq5+NKZklRfCRFHFsmLnXl4dkeH1CjhYvEG5v/5ZN3wUzwrcUqcuw==
+    i9ZHLr5nkuY/qeb49XhCALfQ+h6eVODKaS4uGth+91AlX07tmPP15C34PX283lqPtJZ6Z6Wc/2MR0VoM9elZepWmE152xa2lXjnGSteg7gn49SG73Hd+A11xNy+eOhmi6TLPwQ==
+    WVp4ciuTMTwv1165XYakWsZI+xV0/WUr3a5JGw+L51bXxMW3/xfF2bbheDBWYGIuTfaE8edTTil67bXov0W2/v4FJb5d+Dcu3wUdCxffnRszZd4/Z2nhydGWMTwvd9+SVd7/Hw==
+    I9eG/odIjb+2Hm0Z7p/TzWeo0n3VoOR8F91KNHba3FvbI23eKXUn7qx6MuDXh7m32kLru8314eU0l2XspfWluS+2Eqe92PD0Wt+qM715EtcVedyl/Vgt4gkfK8vjqM13tNeyRw==
+    Pd2OqHkEHQc9Fp9XWCOs98DNeTRR7WFq+2U7d+DX8YuQabwK/u4VvRhfa9J+rBbcitaqtpwx09Y6XDsHt+pp7zDtQY/F245VGzdjoX31WEnzI6vyD266ypT7+udsLe3HahGfkA==
+    Vhasb+rQw5Ym7xfzWRT92ySc58fxY32/5f9R12GG6TH9PV7dudGfZ8DfwOm/71Z/ve8IPWY7sDJo20Ov38ePiT3D+SHM4PD4Wi3oDCTHsr5SKVMqW/Yo52Lt5wj++UavHP0ZKg==
+    Dcor03mj1ob6O2HDU2edbPfa5qFe1/bc515Gjfa3MDv4KIxaPVa4bg3b46jm4q637q2FfA/y+TK5fWuw2Mm1nnatsa5ja7Gx6dTHUd+O9Rat1nXar94HFd+edtvDastWyu3Xag==
+    J2Uwe9q11ZMu92pp7/0KpByqfAdkZJtX7YmybEvleS2RtLDUK1Vtz8VO33L1z2tszk6D8ip13vpU5NhY0FpVPWdZuDrabbicnC2auJdRl2LeitYssUkz+fL8dz2DL0vbmXttrQ==
+    nQ3Tem14evZriQg//kparXbyiK/Tjp/hp7DDv3+T3ylZsHEpYyp7sOHrc3AaBl7jq2B7FUb9dHbXprrHQ12PPhX60VD21WvJjYw9NXgVbH3O5wawujjYbbzqHiZar8/nx7Mhlw==
+    D08tvfIe62Ed+tjrkcFq4X/DT2yvc4f/LrGIOwjP+OHvAqyvePYWhc1F/G/TWgQ9XwZI/HqcX+AWre/XYfdl5pYNlirx/mmrdj9DitZeEXX8XFEq15wGHhvx5buDOgZOI3UKPA==
+    116PLbXJnjldVG0wXRK21CV7lnTpdkdqhTqrVquWjVN9HNo1pa4tLVVg1hxb+VuAatW/wr9t29falMr0TJze+HZv/jxmykr+1tLC8y60Pz+/4+8zp0frg9etV8LVD+ubeB/U9Q==
+    tXYFMGZLSw7M2sYWc2c8Z8RIzMmTjR+LJ42SNFhiXmYPW/6yHGOuPdRPWvwpGt/nqP8yZlyf6v7q59j9D1BLAQItABQABgAIAJuCnkfoHgdIxwEAALILAAATAAAAAAAAAAAAAA==
+    AAAAAAAAAFtDb250ZW50X1R5cGVzXS54bWxQSwECLQAUAAYACAAAACEAHpEat+8AAABOAgAACwAAAAAAAAAAAAAAAAAABAAAX3JlbHMvLnJlbHNQSwECLQAUAAYACADcYbpUgQ==
+    OrzXaQEAAPcHAAAcAAAAAAAAAAAAAAAAACAHAAB3b3JkL19yZWxzL2RvY3VtZW50LnhtbC5yZWxzUEsBAi0AFAAGAAgA3GG6VBmoBQrTDwAAn9wAABEAAAAAAAAAAAAAAAAAyw==
+    CQAAd29yZC9kb2N1bWVudC54bWxQSwECLQAUAAYACADcYbpUZ7P85xIHAADeIQAAEAAAAAAAAAAAAAAAAADNGQAAd29yZC9oZWFkZXIyLnhtbFBLAQItABQABgAIANxhulQpyA==
+    zuQfBAAABg8AABAAAAAAAAAAAAAAAAAADSEAAHdvcmQvZm9vdGVyMS54bWxQSwECLQAUAAYACADcYbpUviUIYjEFAADKGQAAEAAAAAAAAAAAAAAAAABaJQAAd29yZC9oZWFkZQ==
+    cjEueG1sUEsBAi0AFAAGAAgA3GG6VEbosaxgCAAAqEgAABAAAAAAAAAAAAAAAAAAuSoAAHdvcmQvZm9vdGVyMi54bWxQSwECLQAUAAYACADcYbpUdo+b980BAABSBgAAEQAAAA==
+    AAAAAAAAAAAAAEczAAB3b3JkL2VuZG5vdGVzLnhtbFBLAQItABQABgAIAAAAIQDHzvKouQAAACEBAAAbAAAAAAAAAAAAAAAAAEM1AAB3b3JkL19yZWxzL2hlYWRlcjIueG1sLg==
+    cmVsc1BLAQItABQABgAIANxhulQLMQgTzgEAAFgGAAASAAAAAAAAAAAAAAAAADU2AAB3b3JkL2Zvb3Rub3Rlcy54bWxQSwECLQAUAAYACAAAACEAqlIl3yMGAACLGgAAFQAAAA==
+    AAAAAAAAAAAAADM4AAB3b3JkL3RoZW1lL3RoZW1lMS54bWxQSwECLQAKAAAAAAAAACEAMlJ+tQoAAAAKAAAAFQAAAAAAAAAAAAAAAACJPgAAd29yZC9tZWRpYS9pbWFnZTEuYg==
+    aW5QSwECLQAUAAYACAAAACEAd/vHS6EMAACgdgAAGgAAAAAAAAAAAAAAAADGPgAAd29yZC9nbG9zc2FyeS9kb2N1bWVudC54bWxQSwECLQAUAAYACAAAACEA0nc7M/UAAAB1AQ==
+    AAAcAAAAAAAAAAAAAAAAAJ9LAAB3b3JkL19yZWxzL3NldHRpbmdzLnhtbC5yZWxzUEsBAi0AFAAGAAgAAAAhAP3euxMvAwAA4ggAABoAAAAAAAAAAAAAAAAAzkwAAHdvcmQvZw==
+    bG9zc2FyeS9zZXR0aW5ncy54bWxQSwECLQAUAAYACAAAACEAg9C15eYAAACtAgAAJQAAAAAAAAAAAAAAAAA1UAAAd29yZC9nbG9zc2FyeS9fcmVscy9kb2N1bWVudC54bWwucg==
+    ZWxzUEsBAi0AFAAGAAgAAAAhAMHaXSh/CAAAUyAAABEAAAAAAAAAAAAAAAAAXlEAAHdvcmQvc2V0dGluZ3MueG1sUEsBAi0AFAAGAAgAAAAhAHxzapbgAAAAVQEAABgAAAAAAA==
+    AAAAAAAAAAAMWgAAY3VzdG9tWG1sL2l0ZW1Qcm9wczIueG1sUEsBAi0AFAAGAAgAAAAhADVlGFikAAAA/gAAABMAAAAAAAAAAAAAAAAASlsAAGN1c3RvbVhtbC9pdGVtMi54bQ==
+    bFBLAQItABQABgAIAAAAIQBcliciwgAAACgBAAAeAAAAAAAAAAAAAAAAAEdcAABjdXN0b21YbWwvX3JlbHMvaXRlbTIueG1sLnJlbHNQSwECLQAUAAYACAAAACEAgg5FYZkYAA==
+    AOTBAAAYAAAAAAAAAAAAAAAAAE1eAAB3b3JkL2dsb3NzYXJ5L3N0eWxlcy54bWxQSwECLQAUAAYACACbgp5HseohiToBAABIAgAAEQAAAAAAAAAAAAAAAAAcdwAAZG9jUHJvcA==
+    cy9jb3JlLnhtbFBLAQItABQABgAIAAAAIQCTH/Dbdg8AANCRAAAPAAAAAAAAAAAAAAAAAI15AAB3b3JkL3N0eWxlcy54bWxQSwECLQAUAAYACAAAACEAJO+2RBMBAAD/AQAAFA==
+    AAAAAAAAAAAAAAAAADCJAAB3b3JkL3dlYlNldHRpbmdzLnhtbFBLAQItABQABgAIAAAAIQAZj8s/xAEAAO0EAAASAAAAAAAAAAAAAAAAAHWKAAB3b3JkL2ZvbnRUYWJsZS54bQ==
+    bFBLAQItABQABgAIAAAAIQBbbf2TCQEAAPEBAAAdAAAAAAAAAAAAAAAAAGmMAAB3b3JkL2dsb3NzYXJ5L3dlYlNldHRpbmdzLnhtbFBLAQItABQABgAIAAAAIQAZj8s/xAEAAA==
+    7QQAABsAAAAAAAAAAAAAAAAArY0AAHdvcmQvZ2xvc3NhcnkvZm9udFRhYmxlLnhtbFBLAQItABQABgAIAJuCnkcxG1X76QEAAGEEAAAQAAAAAAAAAAAAAAAAAKqPAABkb2NQcg==
+    b3BzL2FwcC54bWxQSwECLQAUAAAACAD9a4FUNT1wwiMMAAB2dAAAEwAAAAAAAAAAAAAAAADJkgAAY3VzdG9tWE1ML2l0ZW0zLnhtbFBLBQYAAAAAHgAeAN8HAAA5nwAAAAA=
     END_OF_WORDLAYOUT
   }
 }

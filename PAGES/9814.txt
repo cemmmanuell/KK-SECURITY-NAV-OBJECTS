@@ -2,9 +2,10 @@ OBJECT Page 9814 Device Card
 {
   OBJECT-PROPERTIES
   {
-    Date=24/03/19;
-    Time=12:00:00;
-    Version List=NAVW114.00;
+    Date=01/04/22;
+    Time=08:43:06;
+    Modified=Yes;
+    Version List=NAVW110.0;
   }
   PROPERTIES
   {
@@ -42,16 +43,17 @@ OBJECT Page 9814 Device Card
                 ApplicationArea=#Basic,#Suite;
                 SourceExpr=Enabled }
 
+    { 10  ;2   ;Field     ;
+                SourceExpr="Base ip address" }
+
     { 7   ;0   ;Container ;
                 ContainerType=FactBoxArea }
 
     { 8   ;1   ;Part      ;
-                ApplicationArea=#Notes;
                 PartType=System;
                 SystemPartID=Notes }
 
     { 9   ;1   ;Part      ;
-                ApplicationArea=#RecordLinks;
                 PartType=System;
                 SystemPartID=RecordLinks }
 
